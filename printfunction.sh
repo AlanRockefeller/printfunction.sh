@@ -598,10 +598,13 @@ run_with_optional_highlighting() {
         extract_code | "${highlighter[@]}"
         local -a statuses=("${PIPESTATUS[@]}")
         set -e
+        if [ "${statuses[0]}" -ne 0 ]; then
+            return "${statuses[0]}"
+        fi
         if [ "${statuses[1]}" -ne 0 ]; then
             return "${statuses[1]}"
         fi
-        return "${statuses[0]}"
+        return 0
     else
         extract_code
     fi
