@@ -47,6 +47,7 @@ printfunction myfile.py MyClass.process  # Complete, accurate, always works
 - **Intelligent errors** – Detects when a function exists but is nested; suggests using `--all`
 - **Import analysis** – `--import=used` extracts only the imports your function actually references
 - **Regex search** – Match by pattern against fully-qualified names (`--regex '^test_'`)
+- **Fuzzy matching** – Suggests closest matches for typos when a function is not found
 - **Syntax highlighting** – Auto-detects `bat`/`batcat`/`pygmentize` when outputting to terminal
 - **Multiple matches** – Shows all definitions by default; use `--first` for just the initial one
 
@@ -91,7 +92,7 @@ printfunction [OPTIONS] FILENAME [FUNCTION_NAME]
 | `--import=all` | Include all module/class-scope imports (explicit form) |
 | `--import=used` | Include only imports referenced by the extracted function (best-effort heuristic) |
 | `--import=none` | Disable import extraction |
-| `--list` | List all available functions instead of extracting |
+| `--list` | List names and line numbers of all functions instead of extracting |
 | `--regex PATTERN` | Match by regex against fully-qualified names (overrides `FUNCTION_NAME`) |
 | `-h, --help` | Show help message |
 
@@ -179,12 +180,16 @@ printfunction --regex '^test_' tests/unit_tests.py
 Match methods in a specific class:
 
 ```bash
-printfunction --regex 'DatabaseHandler\\..*' db.py
+printfunction --regex 'DatabaseHandler\..*' db.py
 ```
 
-**Note:** Regex applies to fully-qualified names (e.g., `MyClass.method`).
+**Note:**
+- Regex applies to fully-qualified names (e.g., `MyClass.method`).
+- Use **single quotes** (`'...'`) around patterns to prevent your shell from interpreting backslashes.
+  - Correct: `'^test\.'` (matches literal dot)
+  - Incorrect (in most shells): `"^test\."` (shell might consume backslash)
 - `^test_` matches only top-level functions named `test_*`.
-- `(^|\\.)test_` matches `test_*` at the top-level OR inside classes/modules.
+- `(^|\.)test_` matches `test_*` at the top-level OR inside classes/modules.
 
 ### List available functions
 
@@ -266,11 +271,11 @@ pip install pygments
 
 ## How It Works
 
-1. **Parse** – Converts Python source into an abstract syntax tree using Python's `ast` module
-2. **Track context** – Builds fully-qualified names by tracking class/function nesting as it walks the tree
-3. **Match** – Compares your target against qualified names (supports simple names and dot-notation)
-4. **Extract** – Uses AST line numbers to extract exact source code including decorators
-5. **Analyze imports** – For `--import=used`, walks the function's AST to find referenced names and matches them against imports
+1. **Parse** – Converts Python source into an abstract syntax tree using Python's `ast` module.
+2. **Track context** – Builds fully-qualified names by tracking nesting depth. A function `bar` inside class `Foo` becomes `Foo.bar`. Nested functions are tracked as `outer.inner`.
+3. **Handle decorators** – Identifies lines preceding the function definition that start with `@` to ensure the complete declaration is captured.
+4. **Match** – Compares your target against qualified names (supports simple names, dot-notation `Class.method`, and regex patterns).
+5. **Analyze imports** – For `--import=used`, the tool walks the AST of the target function to find every name loaded (variables, classes, functions) and checks them against module-level imports, filtering out unused ones.
 
 ---
 
