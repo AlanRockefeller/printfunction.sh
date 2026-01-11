@@ -421,9 +421,10 @@ if list_mode:
         items = [d for d in items if matches(d)]
     if items:
         print(format_list(items))
+        raise SystemExit(0)
     else:
         print("(no matches)", file=sys.stderr)
-    raise SystemExit(0)
+        raise SystemExit(1)
 
 # Extraction mode: determine selected defs
 selected = [d for d in deduped if matches(d)]
@@ -595,9 +596,12 @@ run_with_optional_highlighting() {
 
         set +e
         extract_code | "${highlighter[@]}"
-        local ec=${PIPESTATUS[0]}
+        local -a statuses=("${PIPESTATUS[@]}")
         set -e
-        return "$ec"
+        if [ "${statuses[1]}" -ne 0 ]; then
+            return "${statuses[1]}"
+        fi
+        return "${statuses[0]}"
     else
         extract_code
     fi

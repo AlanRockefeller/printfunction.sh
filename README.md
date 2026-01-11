@@ -106,9 +106,9 @@ printfunction [OPTIONS] FILENAME [FUNCTION_NAME]
 
 | Code | Meaning |
 |------|---------|
-| `0` | Success – function(s) found and printed |
-| `1` | Not found – no matching functions |
-| `2` | Usage error – invalid arguments, missing file, or syntax error |
+| `0` | Success – requested output produced (extraction succeeded, or `--list` found matches) |
+| `1` | Not found – no matches (extraction target not found, or `--list` produced no matches) |
+| `2` | Usage error – invalid arguments, missing file, or syntax error in the Python file |
 
 ---
 
@@ -157,7 +157,7 @@ printfunction --all decorators.py retry.exponential_backoff
 
 **Forgot `--all`? The tool helps you:**
 
-```
+```text
 *** FOUND IT! ***
 'process_one' is nested inside: main
 
@@ -184,7 +184,7 @@ printfunction --regex 'DatabaseHandler\\..*' db.py
 
 **Note:** Regex applies to fully-qualified names (e.g., `MyClass.method`).
 - `^test_` matches only top-level functions named `test_*`.
-- `(^|\\.)test_` matches `test_*` at the top level OR inside classes/modules.
+- `(^|\\.)test_` matches `test_*` at the top-level OR inside classes/modules.
 
 ### List available functions
 
@@ -193,7 +193,7 @@ printfunction --list myfile.py
 ```
 
 **Output:**
-```
+```text
 main  (line 10)
 MyClass.process  (line 25)
 helper_function  (line 45)
@@ -206,7 +206,7 @@ printfunction --list --all myfile.py
 ```
 
 **Output:**
-```
+```text
 main  (line 10)
 main.process_one  (line 257)
 MyClass.process  (line 25)
@@ -222,7 +222,7 @@ printfunction myfile.py foo
 ```
 
 **Stderr output (TTY only):**
-```
+```text
 Found 3 definitions: foo (line 10), MyClass.foo (line 45), Other.foo (line 78)
 ```
 
@@ -233,7 +233,7 @@ printfunction --first myfile.py foo
 ```
 
 **Stderr output:**
-```
+```text
 Found 3 definitions: foo (line 10), MyClass.foo (line 45), Other.foo (line 78) (printing first due to --first)
 ```
 
@@ -280,7 +280,7 @@ pip install pygments
 
 The tool suggests similar names when you make a typo:
 
-```
+```text
 Couldn't find a match in: myfile.py
   Target: 'proces'
 
@@ -293,7 +293,7 @@ Closest matches:
 
 If a function exists but is nested, you'll get specific guidance:
 
-```
+```text
 *** FOUND IT! ***
 'helper' is nested inside: main.process_data
 
@@ -314,7 +314,7 @@ For these cases, use `--import=all` to include all module-level imports.
 
 The tool requires valid Python syntax:
 
-```
+```text
 Error: syntax error while parsing myfile.py:
   invalid syntax (myfile.py, line 42)
 ```
