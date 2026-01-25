@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# printfunction.sh version 1.0
-# Alan Rockefeller - January 10, 2026
+# printfunction.sh version 1.1
+# Alan Rockefeller - January 25, 2026
 
 set -euo pipefail
 
@@ -9,7 +9,7 @@ set -euo pipefail
 if [ $# -eq 0 ] || [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
     cat <<'HELP'
 Usage:
-  print_function.sh [OPTIONS] FILENAME [FUNCTION_NAME]
+  printfunction.sh [OPTIONS] FILENAME [FUNCTION_NAME]
 
 Extract Python function/method definitions using AST parsing.
 Auto-detects 'bat'/'batcat' or 'pygmentize' for syntax highlighting when stdout is a TTY.
@@ -21,6 +21,10 @@ Targeting:
       Outer.Inner.method
   - With --all, nested functions are also addressable:
       outer.inner
+
+  lines START-END prints a line range (inclusive).
+
+  ~START-END prints a "smart context" range (enclosing def/class for .py, else padded range).
 
 Matching:
   - By default, this prints *all* matches in source order.
@@ -43,29 +47,37 @@ Options:
 
 Examples:
   # Print a top-level function (all matches named 'foo')
-  ./print_function.sh myfile.py foo
+  ./printfunction.sh myfile.py foo
 
   # Print only the first match named 'foo'
-  ./print_function.sh --first myfile.py foo
+  ./printfunction.sh --first myfile.py foo
+
+  # Print exact lines 470-510 (any file type)
+  ./printfunction.sh myfile.py lines 470-510
+  ./printfunction.sh myfile.qml 470-510
+
+  # Smart context around 470-510
+  ./printfunction.sh myfile.py ~470-510
+  ./printfunction.sh myfile.qml lines ~470-510
 
   # Print a method inside a class
-  ./print_function.sh myfile.py MyClass.process
+  ./printfunction.sh myfile.py MyClass.process
 
   # Include nested functions and target a nested function by qualname
-  ./print_function.sh --all myfile.py outer.inner
+  ./printfunction.sh --all myfile.py outer.inner
 
   # Print function plus all module/class-scope imports
-  ./print_function.sh --import myfile.py foo
+  ./printfunction.sh --import myfile.py foo
 
   # Print function plus only imports that appear used by that function
-  ./print_function.sh --import=used myfile.py foo
+  ./printfunction.sh --import=used myfile.py foo
 
   # List everything available
-  ./print_function.sh --list myfile.py
+  ./printfunction.sh --list myfile.py
 
   # Regex match (fully-qualified names)
-  ./print_function.sh --regex '(^|\\.)test_' myfile.py
-  ./print_function.sh --list --regex 'MyClass\\..*' myfile.py
+  ./printfunction.sh --regex '(^|\\.)test_' myfile.py
+  ./printfunction.sh --list --regex 'MyClass\\..*' myfile.py
 HELP
     exit 0
 fi
@@ -146,6 +158,25 @@ fi
 FILENAME="${ARGS[0]}"
 FUNC_NAME="${ARGS[1]:-}"  # optional if --list or --regex is used
 
+# --- Line-range shorthand / mode ---
+LINE_MODE="false"
+LINE_SPEC=""
+
+# Allow: printfunction.sh file lines 470-510
+# Treat 'lines' as keyword only if followed by a range-like argument
+if [ "${FUNC_NAME:-}" = "lines" ] && [ ${#ARGS[@]} -ge 3 ] && [[ "${ARGS[2]:-}" =~ ^~?[0-9]+[-–][0-9]+$ ]]; then
+    LINE_MODE="true"
+    LINE_SPEC="${ARGS[2]}"
+    FUNC_NAME=""   # not used
+else
+    # Allow: printfunction.sh file 470-510  OR  ~470-510
+    if [[ "${FUNC_NAME:-}" =~ ^~?[0-9]+[-–][0-9]+$ ]]; then
+        LINE_MODE="true"
+        LINE_SPEC="${FUNC_NAME}"
+        FUNC_NAME=""
+    fi
+fi
+
 # Validate that FILENAME doesn't look like an option (common mistake)
 if [[ "$FILENAME" == --* ]]; then
     echo "Error: Expected FILENAME, got option: $FILENAME" >&2
@@ -153,8 +184,8 @@ if [[ "$FILENAME" == --* ]]; then
     exit 2
 fi
 
-# If not listing and no regex and no function name, that's an error.
-if [ "$LIST_MODE" != "true" ] && [ -z "$REGEX_PATTERN" ] && [ -z "$FUNC_NAME" ]; then
+# If not listing and no regex and no function name and not line mode, that's an error.
+if [ "$LIST_MODE" != "true" ] && [ -z "$REGEX_PATTERN" ] && [ -z "$FUNC_NAME" ] && [ "$LINE_MODE" != "true" ]; then
     echo "Error: Missing FUNCTION_NAME (or use --regex / --list)" >&2
     echo "Run with --help for usage information." >&2
     exit 2
@@ -169,14 +200,16 @@ extract_code() {
         "$IMPORT_MODE" \
         "$LIST_MODE" \
         "$REGEX_PATTERN" \
-        "$FIRST_ONLY" <<'PY'
+        "$FIRST_ONLY" \
+        "$LINE_MODE" \
+        "$LINE_SPEC" <<'PY'
 import ast
 import difflib
 import re
 import sys
 import tokenize
 from dataclasses import dataclass
-from typing import List, Set, Tuple
+from typing import List, Set, Tuple, Optional
 
 filename = sys.argv[1]
 target = sys.argv[2]  # may be empty if using --regex/--list
@@ -185,6 +218,68 @@ import_mode = sys.argv[4]  # none|all|used
 list_mode = sys.argv[5] == "true"
 regex_pat = sys.argv[6] or None
 first_only = sys.argv[7] == "true"
+line_mode = sys.argv[8] == "true"
+line_spec = sys.argv[9] or ""
+
+def parse_line_spec(spec: str) -> Tuple[bool, int, int]:
+    """
+    Returns (smart, start, end). Accepts:
+      470-510
+      470–510  (en dash)
+      ~470-510
+      ~470–510
+    """
+    spec = spec.strip()
+    smart = spec.startswith("~")
+    if smart:
+        spec = spec[1:].strip()
+    spec = spec.replace("–", "-")
+    m = re.fullmatch(r"(\d+)-(\d+)", spec)
+    if not m:
+        raise ValueError(f"Invalid line range: {spec!r} (expected START-END)")
+    a = int(m.group(1))
+    b = int(m.group(2))
+    if a <= 0 or b <= 0:
+        raise ValueError("Line numbers must be >= 1")
+    start, end = (a, b) if a <= b else (b, a)
+    return smart, start, end
+
+def print_numbered_range(lines: List[str], start: int, end: int) -> None:
+    start = max(1, start)
+    end = min(len(lines), end)
+    width = len(str(end))
+    for ln in range(start, end + 1):
+        s = lines[ln - 1].rstrip("\n")
+        print(f"{ln:>{width}} | {s}")
+
+def is_python_file(path: str) -> bool:
+    return path.endswith(".py") or path.endswith(".pyw")
+
+def contains_range(node: ast.AST, start: int, end: int) -> bool:
+    if not hasattr(node, "lineno") or not hasattr(node, "end_lineno"):
+        return False
+    return int(node.lineno) <= start and int(node.end_lineno) >= end
+
+def pick_best_enclosing(tree: ast.AST, start: int, end: int) -> Optional[ast.AST]:
+    # Prefer functions, then classes; else fallback
+    candidates: List[ast.AST] = []
+
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if contains_range(n, start, end):
+                candidates.append(n)
+
+    if not candidates:
+        return None
+
+    # Smallest enclosing = minimal (end-start) span, tie-breaker: deepest (more specific)
+    def key(n: ast.AST) -> Tuple[int, int, int]:
+        span = int(n.end_lineno) - int(n.lineno)
+        # function gets priority over class if same span
+        pri = 0 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) else 1
+        return (span, pri, int(getattr(n, "lineno", 10**18)))
+
+    return sorted(candidates, key=key)[0]
 
 if import_mode not in ("none", "all", "used"):
     print(f"Internal error: invalid import mode '{import_mode}'", file=sys.stderr)
@@ -193,21 +288,53 @@ if import_mode not in ("none", "all", "used"):
 try:
     with tokenize.open(filename) as f:
         source = f.read()
-    tree = ast.parse(source, filename=filename)
 except FileNotFoundError:
     print(f"Error: file not found: {filename}", file=sys.stderr)
     print("Tip: check the path, or run with --help for usage examples.", file=sys.stderr)
     raise SystemExit(2)
+except Exception as e:
+    print(f"Error reading {filename}: {e}", file=sys.stderr)
+    raise SystemExit(2)
+
+lines = source.splitlines(True)
+
+if line_mode:
+    try:
+        smart, start, end = parse_line_spec(line_spec)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        raise SystemExit(2)
+
+    # If not smart, just print exact range and exit
+    if not smart:
+        print_numbered_range(lines, start, end)
+        raise SystemExit(0)
+
+    # Smart mode:
+    # - Python: try to print smallest enclosing def/class that contains the range
+    # - Otherwise: print padded lines around the range
+    if not is_python_file(filename):
+        PAD = 25
+        print_numbered_range(lines, start - PAD, end + PAD)
+        raise SystemExit(0)
+
+    # Python smart mode falls through to AST parse below
+
+if not line_mode and not is_python_file(filename):
+    print(f"Error: function extraction only supports .py/.pyw files (got {filename}).", file=sys.stderr)
+    print(f"For other files, use: lines START-END or ~START-END", file=sys.stderr)
+    raise SystemExit(2)
+
+try:
+    tree = ast.parse(source, filename=filename)
 except SyntaxError as e:
     print(f"Error: syntax error while parsing {filename}:", file=sys.stderr)
     print(f"  {e}", file=sys.stderr)
     print("Tip: this tool requires the file to be valid Python syntax.", file=sys.stderr)
     raise SystemExit(2)
 except Exception as e:
-    print(f"Error reading/parsing {filename}: {e}", file=sys.stderr)
+    print(f"Error parsing {filename}: {e}", file=sys.stderr)
     raise SystemExit(2)
-
-lines = source.splitlines(True)
 
 def node_span(node: ast.AST) -> Tuple[int, int, int, int]:
     """(start_line, start_col, end_line, end_col) for sorting/dedup."""
@@ -248,6 +375,20 @@ def get_full_code(node: ast.AST) -> str:
         seg_lines[-1] = seg_lines[-1][:end_col]
 
     return "".join(seg_lines)
+
+if line_mode:
+    # we already validated it above
+    smart, start, end = parse_line_spec(line_spec)
+
+    node = pick_best_enclosing(tree, start, end)
+    if node is not None:
+        print(get_full_code(node).rstrip("\n"))
+        raise SystemExit(0)
+
+    # Fallback if no enclosing node found
+    PAD = 25
+    print_numbered_range(lines, start - PAD, end + PAD)
+    raise SystemExit(0)
 
 @dataclass(frozen=True)
 class FoundDef:
@@ -587,11 +728,23 @@ run_with_optional_highlighting() {
     if [ -t 1 ]; then
         local -a highlighter=(cat)
         if command -v bat >/dev/null 2>&1; then
-            highlighter=(bat --color=always --language=python --style=plain --paging=never)
+            if [ "$LINE_MODE" = "true" ]; then
+                highlighter=(bat --color=always --style=plain --paging=never --file-name "$FILENAME")
+            else
+                highlighter=(bat --color=always --language=python --style=plain --paging=never)
+            fi
         elif command -v batcat >/dev/null 2>&1; then
-            highlighter=(batcat --color=always --language=python --style=plain --paging=never)
+            if [ "$LINE_MODE" = "true" ]; then
+                highlighter=(batcat --color=always --style=plain --paging=never --file-name "$FILENAME")
+            else
+                highlighter=(batcat --color=always --language=python --style=plain --paging=never)
+            fi
         elif command -v pygmentize >/dev/null 2>&1; then
-            highlighter=(pygmentize -l python)
+            if [ "$LINE_MODE" = "true" ]; then
+                highlighter=(pygmentize -g)
+            else
+                highlighter=(pygmentize -l python)
+            fi
         fi
 
         set +e
