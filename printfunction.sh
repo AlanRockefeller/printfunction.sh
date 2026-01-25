@@ -149,31 +149,111 @@ done
 # Now POSITIONAL_ARGS contains only non-option arguments
 ARGS=("${POSITIONAL_ARGS[@]}")
 
-if [ ${#ARGS[@]} -lt 1 ]; then
+# --- Auto-detect filename (robust grep-like) ---
+# Strategy:
+# 1. Prefer existing files ending in .py / .pyw
+# 2. If none, accept exactly one existing file of any type
+# 3. If ambiguous (multiple candidates), error out
+# 4. If no files found, fallback to first arg only if it looks like a path
+
+looks_like_path() {
+    local s="${1:-}"
+    [[ "$s" == */* || "$s" == ./* || "$s" == ../* || "$s" == ~/* || "$s" == *.py || "$s" == *.pyw ]]
+}
+
+CANDIDATE_INDICES=()
+PY_CANDIDATE_INDICES=()
+
+for i in "${!ARGS[@]}"; do
+    arg="${ARGS[$i]}"
+    if [ -f "$arg" ]; then
+        CANDIDATE_INDICES+=("$i")
+        if [[ "$arg" == *.py || "$arg" == *.pyw ]]; then
+            PY_CANDIDATE_INDICES+=("$i")
+        fi
+    fi
+done
+
+FILE_INDEX=-1
+
+if [ "${#PY_CANDIDATE_INDICES[@]}" -eq 1 ]; then
+    FILE_INDEX="${PY_CANDIDATE_INDICES[0]}"
+elif [ "${#PY_CANDIDATE_INDICES[@]}" -gt 1 ]; then
+     echo "Error: Multiple Python file arguments detected. Please specify only one." >&2
+     exit 2
+elif [ "${#CANDIDATE_INDICES[@]}" -eq 1 ]; then
+    # No .py files, but exactly one other file
+    FILE_INDEX="${CANDIDATE_INDICES[0]}"
+elif [ "${#CANDIDATE_INDICES[@]}" -gt 1 ]; then
+    echo "Error: Multiple file arguments detected. Please specify only one." >&2
+    exit 2
+else
+    # No existing files found. Fallback to first arg only if it looks like a path.
+    if [ "${#ARGS[@]}" -gt 0 ] && looks_like_path "${ARGS[0]}"; then
+        FILE_INDEX=0
+    fi
+fi
+
+if [ "$FILE_INDEX" -ge 0 ]; then
+    FILENAME="${ARGS[$FILE_INDEX]}"
+    # Remove the found filename from ARGS by index
+    NEW_ARGS=()
+    for i in "${!ARGS[@]}"; do
+        if [ "$i" -ne "$FILE_INDEX" ]; then
+            NEW_ARGS+=("${ARGS[$i]}")
+        fi
+    done
+    ARGS=("${NEW_ARGS[@]}")
+else
+    FILENAME=""
+fi
+
+if [ -z "$FILENAME" ]; then
     echo "Error: Missing FILENAME" >&2
     echo "Run with --help for usage information." >&2
     exit 2
 fi
 
-FILENAME="${ARGS[0]}"
-FUNC_NAME="${ARGS[1]:-}"  # optional if --list or --regex is used
+# --- Query Parsing ---
+# ARGS now contains the query parts (filename removed).
+# Rules:
+# 1. 'lines START-END' anywhere -> Line Mode
+# 2. '~START-END' or 'START-END' at HEAD -> Line Mode
+# 3. Else -> Function Name at HEAD
 
-# --- Line-range shorthand / mode ---
+FUNC_NAME=""
 LINE_MODE="false"
 LINE_SPEC=""
 
-# Allow: printfunction.sh file lines 470-510
-# Treat 'lines' as keyword only if followed by a range-like argument
-if [ "${FUNC_NAME:-}" = "lines" ] && [ ${#ARGS[@]} -ge 3 ] && [[ "${ARGS[2]:-}" =~ ^~?[0-9]+[-–][0-9]+$ ]]; then
-    LINE_MODE="true"
-    LINE_SPEC="${ARGS[2]}"
-    FUNC_NAME=""   # not used
-else
-    # Allow: printfunction.sh file 470-510  OR  ~470-510
-    if [[ "${FUNC_NAME:-}" =~ ^~?[0-9]+[-–][0-9]+$ ]]; then
-        LINE_MODE="true"
-        LINE_SPEC="${FUNC_NAME}"
-        FUNC_NAME=""
+# 1. Check for 'lines START-END' anywhere (explicit override)
+FOUND_LINES_KW="false"
+for ((i=0; i<${#ARGS[@]}; i++)); do
+    if [ "${ARGS[$i]}" = "lines" ]; then
+        # Check next arg
+        next_idx=$((i+1))
+        if [ $next_idx -lt ${#ARGS[@]} ]; then
+             next_arg="${ARGS[$next_idx]}"
+             if [[ "$next_arg" =~ ^~?[0-9]+[-–][0-9]+$ ]]; then
+                 LINE_MODE="true"
+                 LINE_SPEC="$next_arg"
+                 FOUND_LINES_KW="true"
+                 break
+             fi
+        fi
+    fi
+done
+
+if [ "$FOUND_LINES_KW" = "false" ]; then
+    # 2. Check HEAD for range or smart range
+    if [ ${#ARGS[@]} -gt 0 ]; then
+        first="${ARGS[0]}"
+        if [[ "$first" =~ ^~?[0-9]+[-–][0-9]+$ ]]; then
+            LINE_MODE="true"
+            LINE_SPEC="$first"
+        else
+            # 3. Else it is a function name
+            FUNC_NAME="$first"
+        fi
     fi
 fi
 
@@ -186,8 +266,7 @@ fi
 
 # If not listing and no regex and no function name and not line mode, that's an error.
 if [ "$LIST_MODE" != "true" ] && [ -z "$REGEX_PATTERN" ] && [ -z "$FUNC_NAME" ] && [ "$LINE_MODE" != "true" ]; then
-    echo "Error: Missing FUNCTION_NAME (or use --regex / --list)" >&2
-    echo "Run with --help for usage information." >&2
+    echo "Error: Missing FUNCTION_NAME (or use --regex / --list / lines START-END)" >&2
     exit 2
 fi
 
