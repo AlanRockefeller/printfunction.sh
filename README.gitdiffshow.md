@@ -4,7 +4,7 @@
 **Version:** 1.0  
 **Date:** January 26, 2026  
 **License:** MIT  
-**Repository:** https://github.com/AlanRockefeller/printfunction.sh
+**Repository:** <https://github.com/AlanRockefeller/printfunction.sh>
 
 ## Overview
 
@@ -120,7 +120,7 @@ If no syntax highlighters are available, the tool falls back to plain numbered o
 
 ## Output Format
 
-```
+```text
 Showing N changed file(s):
    path/to/file1.py
    path/to/file2.js

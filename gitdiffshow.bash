@@ -79,11 +79,12 @@ __gitdiffshow_analyze_file() {
   # Bash heredoc is fine; feed to python for analysis.
   # Default: keep stderr quiet so output stays parseable.
   # Debug: set GITDIFFSHOW_DEBUG=1 to see Python errors.
+  local stderr_target="/dev/null"
   if [[ -n "${GITDIFFSHOW_DEBUG:-}" ]]; then
-    python3 - "$file" "${args[@]}" <<'PY'
-  else
-    python3 - "$file" "${args[@]}" 2>/dev/null <<'PY'
+    stderr_target="/dev/stderr"
   fi
+
+  python3 - "$file" "${args[@]}" 2>"$stderr_target" <<'PY'
 import ast
 import os
 import re
