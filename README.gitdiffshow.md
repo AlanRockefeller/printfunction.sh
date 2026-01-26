@@ -65,7 +65,7 @@ gitdiffshow abc123..def456
 ### For Python Files (*.py)
 - Displays only the complete functions/methods that contain changed lines
 - Shows small numbered excerpts for module-level or class-level changes
-- Requires `print_function.sh` for optimal output (falls back to excerpts if unavailable)
+- Requires `printfunction.sh` for optimal output (falls back to excerpts if unavailable)
 
 ### For Non-Python Files
 - Shows numbered excerpts around changed hunks
