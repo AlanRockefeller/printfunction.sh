@@ -3,6 +3,7 @@
 ## [1.2] - 2026-01-25
 
 ### Added
+- Added gitdifshow - shows context around the diffs displayed by git diff
 - Multi-file search support: run `printfunction.sh` against multiple files, directories (recursive), and `**` globs.
 - New `--type TYPE` filter to restrict scanned files (`py` default, `all` for no extension filtering).
 - New `--context N` option to add surrounding context lines around `lines START-END` and smart `~START-END` output.

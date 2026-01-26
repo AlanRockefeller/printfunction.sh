@@ -659,7 +659,7 @@ PY
 
 # --- Output Handling ---
 run_with_optional_highlighting() {
-    if [ -t 1 ]; then
+    if [ -t 1 ] || [ "${PF_FORCE_COLOR:-0}" = "1" ]; then
         local -a highlighter=(cat)
         if command -v bat >/dev/null 2>&1; then
              # Default to plain for multi-file mixed content
@@ -676,9 +676,9 @@ run_with_optional_highlighting() {
              fi
         elif command -v pygmentize >/dev/null 2>&1; then
              if [ "$TYPE_FILTER" = "py" ] && [ "$LINE_MODE" != "true" ]; then
-                 highlighter=(pygmentize -l python)
+                 highlighter=(pygmentize -l python -f terminal256)
              else
-                 highlighter=(pygmentize -g)
+                 highlighter=(pygmentize -g -f terminal256)
              fi
         fi
         
