@@ -1,10 +1,12 @@
-# printfunction.sh 
-# Version 1.0 
-# By Alan Rockefeller - January 10, 2026
+# printfunction.sh  
+# Version 1.2  
+# By Alan Rockefeller — January 25, 2026  
 
 **Extract Python functions with surgical precision using AST parsing.**
 
-A command-line tool that uses Python's abstract syntax tree to extract function and method definitions from source files. Unlike `grep` or `sed`, it understands Python structure—handling decorators, multi-line definitions, and nested scopes correctly every time.
+A command-line tool that uses Python’s abstract syntax tree to extract function and method definitions from source files. Unlike `grep` or `sed`, it understands Python structure—handling decorators, multi-line definitions, and nested scopes correctly.
+
+As of **v1.2**, it also supports **multi-file searching, directory recursion, globs, regex targeting, and line-range extraction**.
 
 ---
 
@@ -16,14 +18,29 @@ curl -o printfunction https://raw.githubusercontent.com/AlanRockefeller/printfun
 chmod +x printfunction
 mv printfunction ~/.local/bin/  # or /usr/local/bin with sudo
 
-# Extract a function
-printfunction myfile.py my_function
+# Extract a function from one file
+printfunction foo myfile.py
+
+# Search across multiple files
+printfunction foo a.py b.py
+
+# Recursive search in a directory
+printfunction foo .
 
 # Extract with imports
-printfunction --import=used myfile.py fetch_data
+printfunction --import=used fetch_data scraper.py
 
-# List all available functions
+# Regex search across a tree
+printfunction --regex '^test_' .
+
+# List all available functions/methods
 printfunction --list myfile.py
+
+# Extract by line range
+printfunction lines 10-40 myfile.py
+
+# Smart “best enclosing block” for a line range (AST-aware)
+printfunction ~10-40 myfile.py
 ```
 
 ---
@@ -35,34 +52,53 @@ printfunction --list myfile.py
 grep -A 20 "def process" myfile.py  # How many lines? What about @decorators?
 
 # printfunction gets it right every time
-printfunction myfile.py MyClass.process  # Complete, accurate, always works
+printfunction MyClass.process myfile.py  # Complete, accurate, always works
 ```
+
+---
+
+## What changed since v1.0?
+
+v1.2 expands `printfunction` from “single-file function extractor” into a **small codebase search tool**:
+
+- **New calling convention:** `printfunction [OPTIONS] [QUERY] [FILES...]`
+- **Multi-file output with per-file headers**
+- **Recursive directory scanning** with sensible default ignores
+- **Glob support** (including `**/*.py` with `recursive=True` in Python)
+- **Regex mode** via `--regex` (no positional QUERY required)
+- **Line range extraction** (`lines START-END`) and **smart block extraction** (`~START-END`)
+- **Context lines** for line-mode matches (`--context N`)
+- **File type filter** (`--type py` default, or `--type all`)
 
 ---
 
 ## Features
 
 - **AST-based extraction** – Captures complete function bodies including decorators, regardless of formatting
-- **Smart targeting** – Extract by name (`foo`), class method (`MyClass.method`), or nested path (`outer.inner` with `--all`)
-- **Intelligent errors** – Detects when a function exists but is nested; suggests using `--all`
-- **Import analysis** – `--import=used` extracts only the imports your function actually references
-- **Regex search** – Match by pattern against fully-qualified names (`--regex '^test_'`)
-- **Fuzzy matching** – Suggests closest matches for typos when a function is not found
-- **Syntax highlighting** – Auto-detects `bat`/`batcat`/`pygmentize` when outputting to terminal
-- **Multiple matches** – Shows all definitions by default; use `--first` for just the initial one
+- **Smart targeting** – Extract by name (`foo`) or qualified name (`Class.method`)
+- **Nested support** – `--all` descends into function bodies to include nested defs in search/listing
+- **Import analysis**
+  - `--import=all` prints module/class-scope imports
+  - `--import=used` prints a best-effort subset used by matched function(s)
+- **Regex search** – `--regex` matches against fully-qualified names (`Class.method`, `outer.inner`, etc.)
+- **Multi-file + recursive search** – Search across files, globs, or entire directories
+- **Line range extraction**
+  - `lines START-END` extracts raw lines (optionally with `--context`)
+  - `~START-END` extracts the *best enclosing block* (function/class/if/try/with/etc.)
+- **Syntax highlighting** – Auto-detects `bat`/`batcat`/`pygmentize` when output is a TTY
+- **Multiple matches** – Prints all matches in source order by default; use `--first` for just the first match *per file*
+- **List mode** – `--list` prints available defs with line numbers (optionally filtered by QUERY or `--regex`)
 
 ---
 
 ## Installation
-
-**Download the script:**
 
 ```bash
 curl -o printfunction https://raw.githubusercontent.com/AlanRockefeller/printfunction.sh/main/printfunction.sh
 chmod +x printfunction
 ```
 
-**Install (choose one):**
+Install (choose one):
 
 ```bash
 # User-local (recommended)
@@ -79,129 +115,104 @@ sudo mv printfunction /usr/local/bin/
 ## Usage
 
 ```bash
-printfunction [OPTIONS] FILENAME [FUNCTION_NAME]
+printfunction [OPTIONS] [QUERY] [FILES...]
 ```
 
-### Options
+### The “FILES…” arguments
+
+You can pass any mix of:
+
+- A file path (`a.py`)
+- A directory (`src/`) — scanned recursively
+- A glob (`"**/*.py"`) — quote it if you don’t want your shell to expand it first
+
+The tool skips common junk folders during recursion (e.g. `.git`, `.venv`, `__pycache__`, `node_modules`, etc.).
+
+### Query syntax
+
+`QUERY` can be one of:
+
+- `foo` — function name
+- `ClassName.method` — qualified method name
+- `lines START-END` — raw line extraction (works on any file type)
+- `~START-END` — smart block extraction (AST-aware for Python; padded fallback for non-Python)
+
+Notes:
+
+- If you use `--regex`, the pattern is provided via the option, so **no positional QUERY is required**.
+- A bare range like `10-20` or `~10-20` is treated as line-mode **only if it’s the first “query-like” argument**.
+
+---
+
+## Options
 
 | Option | Description |
 |--------|-------------|
-| `--all` | Include nested functions (functions defined inside other functions) |
-| `--first` | Print only the first match when multiple definitions exist |
-| `--import` | Include all module/class-scope imports (same as `--import=all`) |
-| `--import=all` | Include all module/class-scope imports (explicit form) |
-| `--import=used` | Include only imports referenced by the extracted function (best-effort heuristic) |
-| `--import=none` | Disable import extraction |
-| `--list` | List names and line numbers of all functions instead of extracting |
-| `--regex PATTERN` | Match by regex against fully-qualified names (overrides `FUNCTION_NAME`) |
+| `--all` | Include nested functions (descend into function bodies) |
+| `--first` | Print only the first match **per file** |
+| `--type py` | Only scan Python files (`.py`, `.pyw`) (default) |
+| `--type all` | Scan all files (line-mode is always allowed; AST extraction still only applies to Python) |
+| `--import` | Include imports (same as `--import=all`) |
+| `--import=all` | Include all module/class-scope imports |
+| `--import=used` | Include only imports that appear to be referenced by the extracted function(s) (best-effort) |
+| `--import=none` | Disable import extraction (default) |
+| `--context N` | Add `N` lines of context around line-mode and smart line-mode output (default: `0`) |
+| `--list` | List names + line numbers instead of extracting (use with `--all` to include nested) |
+| `--regex PATTERN` | Match by regex against fully-qualified names |
 | `-h, --help` | Show help message |
-
-### Function Name Syntax
-
-- `foo` – Any function named `foo`
-- `ClassName.method` – Specific class method
-- `Outer.Inner.method` – Method in nested class
-- `outer.inner` (with `--all`) – Function nested inside another function
-
-### Exit Codes
-
-| Code | Meaning |
-|------|---------|
-| `0` | Success – requested output produced (extraction succeeded, or `--list` found matches) |
-| `1` | Not found – no matches (extraction target not found, or `--list` produced no matches) |
-| `2` | Usage error – invalid arguments, missing file, or syntax error in the Python file |
 
 ---
 
 ## Examples
 
-### Basic extraction
+### 1) Extract a function from one file
 
 ```bash
-printfunction math_utils.py calculate
+printfunction foo myfile.py
 ```
 
-### Class methods
+### 2) Search across multiple files
 
 ```bash
-printfunction models.py User.save_to_db
+printfunction foo a.py b.py src/utils.py
 ```
 
-### Smart import extraction
-
-Extract a function with only the imports it actually uses:
+### 3) Recursive search
 
 ```bash
-printfunction --import=used scraper.py fetch_data
+printfunction foo .
 ```
 
-**Output:**
-```python
-import requests
-from typing import Dict
-
-####################
-
-def fetch_data(url: str) -> Dict:
-    """Fetch JSON data from a URL."""
-    response = requests.get(url)
-    return response.json()
-```
-
-### Nested functions
-
-Extract functions defined inside other functions (requires `--all`):
+### 4) Globs (recommended to quote)
 
 ```bash
-printfunction --all decorators.py retry.exponential_backoff
+printfunction foo "**/*.py"
 ```
 
-**Forgot `--all`? The tool helps you:**
+### 5) Regex matching
 
-```text
-*** FOUND IT! ***
-'process_one' is nested inside: main
-
-By default, this tool does not search functions defined inside other functions.
-Use --all to include nested functions.
-
-Run with --all:
-  printfunction --all myfile.py process_one
-```
-
-### Regex matching
-
-Extract all test functions:
+Match all test defs:
 
 ```bash
-printfunction --regex '^test_' tests/unit_tests.py
+printfunction --regex '^test_' tests/
 ```
 
-Match methods in a specific class:
+Match methods in a class:
 
 ```bash
 printfunction --regex 'DatabaseHandler\..*' db.py
 ```
 
-**Note:**
-- Regex applies to fully-qualified names (e.g., `MyClass.method`).
-- Use **single quotes** (`'...'`) around patterns to prevent your shell from interpreting backslashes.
-  - Correct: `'^test\.'` (matches literal dot)
-  - Incorrect (in most shells): `"^test\."` (shell might consume backslash)
-- `^test_` matches only top-level functions named `test_*`.
-- `(^|\.)test_` matches `test_*` at the top-level OR inside classes/modules.
-
-### List available functions
+### 6) List available functions/methods
 
 ```bash
 printfunction --list myfile.py
 ```
 
-**Output:**
-```text
-main  (line 10)
-MyClass.process  (line 25)
-helper_function  (line 45)
+Filter the list by query:
+
+```bash
+printfunction --list process myfile.py
 ```
 
 Include nested functions:
@@ -210,37 +221,55 @@ Include nested functions:
 printfunction --list --all myfile.py
 ```
 
-**Output:**
-```text
-main  (line 10)
-main.process_one  (line 257)
-MyClass.process  (line 25)
-MyClass.process.helper  (line 30)
-```
+### 7) Import extraction
 
-### Multiple matches
-
-When multiple functions match, the tool shows context:
+All imports:
 
 ```bash
-printfunction myfile.py foo
+printfunction --import=all fetch_data scraper.py
 ```
 
-**Stderr output (TTY only):**
-```text
-Found 3 definitions: foo (line 10), MyClass.foo (line 45), Other.foo (line 78)
-```
-
-Print only the first:
+Only used imports (best-effort):
 
 ```bash
-printfunction --first myfile.py foo
+printfunction --import=used fetch_data scraper.py
 ```
 
-**Stderr output:**
-```text
-Found 3 definitions: foo (line 10), MyClass.foo (line 45), Other.foo (line 78) (printing first due to --first)
+### 8) Line range extraction (raw lines)
+
+```bash
+printfunction lines 10-40 myfile.py
 ```
+
+With extra context:
+
+```bash
+printfunction --context 5 lines 10-40 myfile.py
+```
+
+### 9) Smart block extraction (AST-aware)
+
+Extract the “best enclosing block” containing that range:
+
+```bash
+printfunction ~10-40 myfile.py
+```
+
+With extra context around the chosen block:
+
+```bash
+printfunction --context 5 ~10-40 myfile.py
+```
+
+---
+
+## Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success — matches were printed (or `--list` produced output) |
+| `1` | Not found — no matches anywhere (and no fatal errors) |
+| `2` | Error — invalid arguments, unreadable file, parse error, invalid regex, or “no matches + at least one error” |
 
 ---
 
@@ -252,9 +281,7 @@ Found 3 definitions: foo (line 10), MyClass.foo (line 45), Other.foo (line 78) (
 
 **Optional (for syntax highlighting):**
 - `bat` or `batcat` (recommended)
-- `pygmentize` (from Pygments package)
-
-**Install syntax highlighters:**
+- `pygmentize` (from Pygments)
 
 ```bash
 # macOS
@@ -271,82 +298,83 @@ pip install pygments
 
 ## How It Works
 
-1. **Parse** – Converts Python source into an abstract syntax tree using Python's `ast` module.
-2. **Track context** – Builds fully-qualified names by tracking nesting depth. A function `bar` inside class `Foo` becomes `Foo.bar`. Nested functions are tracked as `outer.inner`.
-3. **Handle decorators** – Identifies lines preceding the function definition that start with `@` to ensure the complete declaration is captured.
-4. **Match** – Compares your target against qualified names (supports simple names, dot-notation `Class.method`, and regex patterns).
-5. **Analyze imports** – For `--import=used`, the tool walks the AST of the target function to find every name loaded (variables, classes, functions) and checks them against module-level imports, filtering out unused ones.
+1. **Expand roots** – Accepts files, directories (recursive), and globs; dedupes paths while preserving discovery order.
+2. **Parse (Python only)** – Uses `ast.parse()` to build a structural view of Python source.
+3. **Track context** – Builds fully-qualified names by tracking class and (optionally) function nesting:
+   - `Foo.bar`
+   - `outer.inner`
+4. **Handle decorators** – Includes `@decorators` above the `def` line as part of the extracted span.
+5. **Match**
+   - Direct name match (`foo`) or exact qualified match (`Class.method`)
+   - Regex match over qualnames (`--regex`)
+6. **Line mode**
+   - `lines A-B`: raw line slice (optionally with `--context`)
+   - `~A-B`: selects the best enclosing AST block (function/class/control block). If not Python, falls back to padded raw lines.
+7. **Import extraction**
+   - `--import=all`: prints module/class-scope imports
+   - `--import=used`: collects “root names” used inside the matched function nodes and filters imports accordingly (best-effort)
 
 ---
 
 ## Troubleshooting
 
-### Function not found
+### “Missing FILES/ROOTS”
 
-The tool suggests similar names when you make a typo:
+You must provide at least one file/dir/glob root:
 
-```text
-Couldn't find a match in: myfile.py
-  Target: 'proces'
-
-Closest matches:
-  - MyClass.process
-  - process_data
+```bash
+printfunction foo   # Error - missing roots
+printfunction foo . # Correct
 ```
 
-### Nested function detection
+### “Missing FUNCTION_NAME”
 
-If a function exists but is nested, you'll get specific guidance:
+If you aren’t using `--regex`, `--list`, or line-mode, you need a query:
 
-```text
-*** FOUND IT! ***
-'helper' is nested inside: main.process_data
-
-Use --all to include nested functions:
-  printfunction --all myfile.py helper
+```bash
+printfunction .     # Error
+printfunction --list .  # Correct
 ```
 
-### Import detection limitations
+### Parse errors
 
-The `--import=used` mode is best-effort and may:
-
-- **Over-include** star imports (`from module import *`)
-- **Miss** dynamic attribute access (`getattr()`) or names in strings/`eval()`
-
-For these cases, use `--import=all` to include all module-level imports.
-
-### Syntax errors
-
-The tool requires valid Python syntax:
+If a Python file can’t be parsed, you’ll get an error like:
 
 ```text
-Error: syntax error while parsing myfile.py:
-  invalid syntax (myfile.py, line 42)
+Error parsing path/to/file.py: invalid syntax (file.py, line 42)
 ```
 
-Fix syntax errors before using the tool.
+Fix syntax errors before using AST extraction. (Line-mode can still work.)
+
+### No matches
+
+If nothing matches and you’re searching Python files, the tool may suggest:
+
+```text
+Tip: run with --list to see available definitions.
+```
 
 ---
 
 ## Contributing
 
-Contributions welcome! Submit issues or pull requests on GitHub.
+Contributions and comments welcome. Submit issues or pull requests on GitHub.
 
 ---
 
 ## License
 
-MIT License – see repository for details.
+MIT License 
 
 ---
 
 ## Related Tools
 
-- [ast-grep](https://ast-grep.github.io/) – Multi-language AST-based search
-- [semgrep](https://semgrep.dev/) – Pattern-based code analysis
-- [bat](https://github.com/sharkdp/bat/) – Syntax highlighting for cat
+- [ast-grep](https://ast-grep.github.io/) – Multi-language AST-based search  
+- [semgrep](https://semgrep.dev/) – Pattern-based code analysis  
+- [bat](https://github.com/sharkdp/bat/) – Syntax highlighting for cat  
 
 ---
 
 **Author:** Alan Rockefeller  
-**Repository:** [github.com/AlanRockefeller/printfunction.sh](https://github.com/AlanRockefeller/printfunction.sh)
+**Repository:** https://github.com/AlanRockefeller/printfunction.sh

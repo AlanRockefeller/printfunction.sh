@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# printfunction.sh version 1.0
-# Alan Rockefeller - January 10, 2026
+# printfunction.sh version 1.2
+# Alan Rockefeller - January 25, 2026
 
 set -euo pipefail
 
@@ -9,63 +9,57 @@ set -euo pipefail
 if [ $# -eq 0 ] || [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
     cat <<'HELP'
 Usage:
-  print_function.sh [OPTIONS] FILENAME [FUNCTION_NAME]
+  printfunction.sh [OPTIONS] [QUERY] [FILES...]
 
 Extract Python function/method definitions using AST parsing.
-Auto-detects 'bat'/'batcat' or 'pygmentize' for syntax highlighting when stdout is a TTY.
+Supports multi-file searching, directory recursion, and globs.
 
 Targeting:
-  - FUNCTION_NAME can be:
-      foo
-      ClassName.method
-      Outer.Inner.method
-  - With --all, nested functions are also addressable:
-      outer.inner
+  - QUERY can be:
+      foo                (Function name)
+      ClassName.method   (Method name)
+      lines START-END    (Line range)
+      ~START-END         (Smart context range)
+  - If --regex is used, the pattern is provided via the option, so no QUERY argument is needed.
 
 Matching:
   - By default, this prints *all* matches in source order.
-    If the function is defined twice, you will see both definitions.
-  - Use --first to print only the first match.
+  - Use --first to print only the first match (per file).
 
 Options:
   --all                 Include nested functions (descend into function bodies)
-  --first               Print only the first match (in source order)
+  --first               Print only the first match per file
+  --type TYPE           Filter file extensions (default: py).
+                        TYPE can be: 'py' (default), 'all' (no filter).
 
   --import              Print imports too (defaults to --import=all)
-  --import=all           Print imports at module/class scope (not inside any function)
-  --import=used          Print only imports that appear to be used by the extracted function(s)
-                         (best-effort heuristic; may miss dynamic imports or over-include star imports)
+  --import=all          Print imports at module/class scope
+  --import=used         Print only imports that appear to be used by the extracted function(s)
 
-  --list                List available functions/methods (use with --all to include nested)
-  --regex PATTERN        Match by regex against fully-qualified names (overrides FUNCTION_NAME)
+  --context N           Add N lines of context around line-mode matches (default: 0).
+
+  --list                List available functions/methods (use with --all to include nested).
+                        If QUERY is provided, filters list by name/qualname.
+
+  --regex PATTERN       Match by regex against fully-qualified names
 
   -h, --help            Show this help message
 
 Examples:
-  # Print a top-level function (all matches named 'foo')
-  ./print_function.sh myfile.py foo
+  # Search for 'foo' in specific files
+  ./printfunction.sh foo a.py b.py
 
-  # Print only the first match named 'foo'
-  ./print_function.sh --first myfile.py foo
+  # Recursive search in current directory
+  ./printfunction.sh foo .
 
-  # Print a method inside a class
-  ./print_function.sh myfile.py MyClass.process
+  # Search using globs (quoted to prevent shell expansion, or unquoted)
+  ./printfunction.sh foo "**/*.py"
 
-  # Include nested functions and target a nested function by qualname
-  ./print_function.sh --all myfile.py outer.inner
+  # Line extraction (header per file)
+  ./printfunction.sh lines 10-20 file1.py file2.py
 
-  # Print function plus all module/class-scope imports
-  ./print_function.sh --import myfile.py foo
-
-  # Print function plus only imports that appear used by that function
-  ./print_function.sh --import=used myfile.py foo
-
-  # List everything available
-  ./print_function.sh --list myfile.py
-
-  # Regex match (fully-qualified names)
-  ./print_function.sh --regex '(^|\\.)test_' myfile.py
-  ./print_function.sh --list --regex 'MyClass\\..*' myfile.py
+  # Smart context extraction
+  ./printfunction.sh ~10-20 file1.py
 HELP
     exit 0
 fi
@@ -75,180 +69,245 @@ INCLUDE_NESTED="false"
 FIRST_ONLY="false"
 LIST_MODE="false"
 REGEX_PATTERN=""
-IMPORT_MODE="none"   # none|all|used
+IMPORT_MODE="none"
+TYPE_FILTER="py"
+CONTEXT_LINES=0
 POSITIONAL_ARGS=()
 
-# Parse all arguments, allowing options anywhere
 while [ $# -gt 0 ]; do
     case "$1" in
-        --all)
-            INCLUDE_NESTED="true"
+        --all) INCLUDE_NESTED="true"; shift ;;
+        --first) FIRST_ONLY="true"; shift ;;
+        --list) LIST_MODE="true"; shift ;;
+        --regex) 
             shift
-            ;;
-        --first)
-            FIRST_ONLY="true"
+            if [ $# -eq 0 ]; then echo "Error: --regex requires a PATTERN" >&2; exit 2; fi
+            REGEX_PATTERN="$1"; shift ;;
+        --import|--imports) IMPORT_MODE="all"; shift ;;
+        --import=all|--imports=all) IMPORT_MODE="all"; shift ;;
+        --import=used|--imports=used) IMPORT_MODE="used"; shift ;;
+        --import=none|--imports=none) IMPORT_MODE="none"; shift ;;
+        --type) 
             shift
-            ;;
-        --list)
-            LIST_MODE="true"
+            if [ $# -eq 0 ]; then echo "Error: --type requires an argument" >&2; exit 2; fi
+            TYPE_FILTER="$1"; shift ;;
+        --context)
             shift
-            ;;
-        --regex)
-            shift
-            if [ $# -eq 0 ]; then
-                echo "Error: --regex requires a PATTERN argument" >&2
-                exit 2
-            fi
-            REGEX_PATTERN="$1"
-            shift
-            ;;
-        --import|--imports)
-            IMPORT_MODE="all"   # default
-            shift
-            ;;
-        --import=all|--imports=all)
-            IMPORT_MODE="all"
-            shift
-            ;;
-        --import=used|--imports=used)
-            IMPORT_MODE="used"
-            shift
-            ;;
-        --import=none|--imports=none)
-            IMPORT_MODE="none"
-            shift
-            ;;
-        -h|--help)
-            # handled above, but keep for completeness
-            exec "$0" --help
-            ;;
-        --*)
-            echo "Error: Unknown option: $1" >&2
-            echo "Run with --help for usage information." >&2
-            exit 2
-            ;;
-        *)
-            POSITIONAL_ARGS+=("$1")
-            shift
-            ;;
+            if [ $# -eq 0 ]; then echo "Error: --context requires an argument" >&2; exit 2; fi
+            CONTEXT_LINES="$1"
+            if ! [[ "$CONTEXT_LINES" =~ ^[0-9]+$ ]]; then echo "Error: --context requires an integer" >&2; exit 2; fi
+            if [ "$CONTEXT_LINES" -gt 5000 ]; then CONTEXT_LINES=5000; fi
+            shift ;;
+        -h|--help) exec "$0" --help ;;
+        --*) echo "Error: Unknown option: $1" >&2; exit 2 ;;
+        *) POSITIONAL_ARGS+=("$1"); shift ;;
     esac
 done
 
-# Now POSITIONAL_ARGS contains only non-option arguments
-ARGS=("${POSITIONAL_ARGS[@]}")
+# --- Query vs Roots Separation ---
+QUERY=""
+SEARCH_ROOTS=()
+LINE_MODE="false"
+LINE_SPEC=""
 
-if [ ${#ARGS[@]} -lt 1 ]; then
-    echo "Error: Missing FILENAME" >&2
+# 1. Check for explicit 'lines' keyword
+FOUND_LINES="false"
+for ((i=0; i<${#POSITIONAL_ARGS[@]}; i++)); do
+    arg="${POSITIONAL_ARGS[$i]}"
+    if [ "$arg" = "lines" ]; then
+        next_idx=$((i+1))
+        if [ $next_idx -lt ${#POSITIONAL_ARGS[@]} ]; then
+             next_arg="${POSITIONAL_ARGS[$next_idx]}"
+             if [[ "$next_arg" =~ ^~?[0-9]+[-–][0-9]+$ ]]; then
+                 LINE_MODE="true"
+                 LINE_SPEC="$next_arg"
+                 FOUND_LINES="true"
+                 # Mark indices to skip
+                 SKIP_INDICES=("$i" "$next_idx")
+                 break
+             fi
+        fi
+    fi
+done
+
+# 2. Separate Args
+for ((i=0; i<${#POSITIONAL_ARGS[@]}; i++)); do
+    # Skip arguments consumed by 'lines' check
+    if [ "$FOUND_LINES" = "true" ]; then
+        for skip in "${SKIP_INDICES[@]}"; do
+            if [ "$i" -eq "$skip" ]; then continue 2; fi
+        done
+    fi
+
+    arg="${POSITIONAL_ARGS[$i]}"
+
+    # Check for direct file/dir existence
+    if [ -e "$arg" ]; then
+        SEARCH_ROOTS+=("$arg")
+        continue
+    fi
+
+    # Check for smart line range (if not already found and no query set)
+    # Only treat bare range as line mode if we don't have a query yet (and not regex/list mode)
+    HAS_QUERY_OR_MODE="false"
+    if [ -n "$REGEX_PATTERN" ] || [ "$LIST_MODE" = "true" ] || [ -n "$QUERY" ] || [ "$LINE_MODE" = "true" ]; then
+        HAS_QUERY_OR_MODE="true"
+    fi
+
+    if [ "$HAS_QUERY_OR_MODE" = "false" ] && [[ "$arg" =~ ^~?[0-9]+[-–][0-9]+$ ]]; then
+        LINE_MODE="true"
+        LINE_SPEC="$arg"
+        continue
+    fi
+
+    # Check if we already have a query (via regex, list mode, or previously found func name)
+    if [ "$HAS_QUERY_OR_MODE" = "true" ]; then
+         # Already have query/mode. If this looks like a bare range, it's likely an error.
+         if [[ "$arg" =~ ^~?[0-9]+[-–][0-9]+$ ]]; then
+             echo "Error: line range '$arg' must be preceded by 'lines' (or be the first arg)." >&2
+             exit 2
+         fi
+         # Otherwise treat as root
+         SEARCH_ROOTS+=("$arg")
+    else
+        # If it's not a file/dir, and we need a query, assume this is it.
+        # But if --regex is set, we don't want a positional query.
+        if [ -n "$REGEX_PATTERN" ]; then
+            SEARCH_ROOTS+=("$arg")
+        else
+            # Check if it looks like a glob though?
+            if [[ "$arg" == *"*"* || "$arg" == *"?"* ]]; then
+                SEARCH_ROOTS+=("$arg")
+            else
+                QUERY="$arg"
+            fi
+        fi
+    fi
+done
+
+# Validation
+if [ "$LIST_MODE" != "true" ] && [ -z "$REGEX_PATTERN" ] && [ -z "$QUERY" ] && [ "$LINE_MODE" != "true" ]; then
+    echo "Error: Missing FUNCTION_NAME (or use --regex / --list / lines START-END)" >&2
+    exit 2
+fi
+
+if [ ${#SEARCH_ROOTS[@]} -eq 0 ]; then
+    echo "Error: Missing FILES/ROOTS" >&2
     echo "Run with --help for usage information." >&2
     exit 2
 fi
 
-FILENAME="${ARGS[0]}"
-FUNC_NAME="${ARGS[1]:-}"  # optional if --list or --regex is used
+# Pass everything to Python
+export PF_TARGET="$QUERY"
+export PF_INCLUDE_NESTED="$INCLUDE_NESTED"
+export PF_IMPORT_MODE="$IMPORT_MODE"
+export PF_LIST_MODE="$LIST_MODE"
+export PF_REGEX_PATTERN="$REGEX_PATTERN"
+export PF_FIRST_ONLY="$FIRST_ONLY"
+export PF_LINE_MODE="$LINE_MODE"
+export PF_LINE_SPEC="$LINE_SPEC"
+export PF_TYPE_FILTER="$TYPE_FILTER"
+export PF_CONTEXT_LINES="$CONTEXT_LINES"
 
-# Validate that FILENAME doesn't look like an option (common mistake)
-if [[ "$FILENAME" == --* ]]; then
-    echo "Error: Expected FILENAME, got option: $FILENAME" >&2
-    echo "Run with --help for usage information." >&2
-    exit 2
-fi
-
-# If not listing and no regex and no function name, that's an error.
-if [ "$LIST_MODE" != "true" ] && [ -z "$REGEX_PATTERN" ] && [ -z "$FUNC_NAME" ]; then
-    echo "Error: Missing FUNCTION_NAME (or use --regex / --list)" >&2
-    echo "Run with --help for usage information." >&2
-    exit 2
-fi
-
-# --- Python Logic ---
 extract_code() {
-    python3 - \
-        "$FILENAME" \
-        "$FUNC_NAME" \
-        "$INCLUDE_NESTED" \
-        "$IMPORT_MODE" \
-        "$LIST_MODE" \
-        "$REGEX_PATTERN" \
-        "$FIRST_ONLY" <<'PY'
+    python3 - "${SEARCH_ROOTS[@]}" <<'PY'
 import ast
-import difflib
-import re
 import sys
+import os
+import glob
+import re
 import tokenize
 from dataclasses import dataclass
 from typing import List, Set, Tuple
 
-filename = sys.argv[1]
-target = sys.argv[2]  # may be empty if using --regex/--list
-include_nested = sys.argv[3] == "true"
-import_mode = sys.argv[4]  # none|all|used
-list_mode = sys.argv[5] == "true"
-regex_pat = sys.argv[6] or None
-first_only = sys.argv[7] == "true"
-
-if import_mode not in ("none", "all", "used"):
-    print(f"Internal error: invalid import mode '{import_mode}'", file=sys.stderr)
-    raise SystemExit(2)
-
+# --- Configuration ---
+target = os.environ["PF_TARGET"]
+include_nested = os.environ["PF_INCLUDE_NESTED"] == "true"
+import_mode = os.environ["PF_IMPORT_MODE"]
+list_mode = os.environ["PF_LIST_MODE"] == "true"
+regex_pat = os.environ["PF_REGEX_PATTERN"] or None
+first_only = os.environ["PF_FIRST_ONLY"] == "true"
+line_mode = os.environ["PF_LINE_MODE"] == "true"
+line_spec = os.environ["PF_LINE_SPEC"]
+type_filter = os.environ["PF_TYPE_FILTER"]
 try:
-    with tokenize.open(filename) as f:
-        source = f.read()
-    tree = ast.parse(source, filename=filename)
-except FileNotFoundError:
-    print(f"Error: file not found: {filename}", file=sys.stderr)
-    print("Tip: check the path, or run with --help for usage examples.", file=sys.stderr)
-    raise SystemExit(2)
-except SyntaxError as e:
-    print(f"Error: syntax error while parsing {filename}:", file=sys.stderr)
-    print(f"  {e}", file=sys.stderr)
-    print("Tip: this tool requires the file to be valid Python syntax.", file=sys.stderr)
-    raise SystemExit(2)
-except Exception as e:
-    print(f"Error reading/parsing {filename}: {e}", file=sys.stderr)
-    raise SystemExit(2)
+    context_lines = int(os.environ["PF_CONTEXT_LINES"])
+except ValueError:
+    context_lines = 0
 
-lines = source.splitlines(True)
+if type_filter not in ("py", "all"):
+    print(f"Error: unknown --type {type_filter!r} (expected 'py' or 'all')", file=sys.stderr)
+    sys.exit(2)
 
-def node_span(node: ast.AST) -> Tuple[int, int, int, int]:
-    """(start_line, start_col, end_line, end_col) for sorting/dedup."""
-    return (
-        getattr(node, "lineno", 10**18),
-        getattr(node, "col_offset", 0),
-        getattr(node, "end_lineno", getattr(node, "lineno", 10**18)),
-        getattr(node, "end_col_offset", 0),
-    )
+roots = sys.argv[1:]
 
-def get_full_code(node: ast.AST) -> str:
-    """Extract exact source segment including decorators, defensively."""
-    if not hasattr(node, "lineno") or not hasattr(node, "end_lineno"):
-        seg = ast.get_source_segment(source, node)
-        return seg if seg is not None else ""
+DEFAULT_IGNORE_DIRS = {
+    '.git', '.venv', 'venv', '__pycache__', 'build', 'dist',
+    '.mypy_cache', '.ruff_cache', 'node_modules', '.idea', '.vscode'
+}
 
-    start_line = int(getattr(node, "lineno"))
-    end_line = int(getattr(node, "end_lineno"))
-    end_col = getattr(node, "end_col_offset", None)
+# --- Helpers ---
+def is_py_file(p: str) -> bool:
+    return p.endswith(".py") or p.endswith(".pyw")
 
-    # Include decorators if present
-    # Guard against decorators with missing/None lineno (can occur in synthetic AST nodes)
-    decs = getattr(node, "decorator_list", None) or []
-    dec_linenos = []
-    for d in decs:
-        ln = getattr(d, "lineno", None)
-        if isinstance(ln, int) and ln > 0:
-            dec_linenos.append(ln)
-    if dec_linenos:
-        start_line = min(start_line, min(dec_linenos))
+def parse_line_spec(spec: str) -> Tuple[bool, int, int]:
+    spec = spec.strip()
+    smart = spec.startswith("~")
+    if smart: spec = spec[1:].strip()
+    spec = spec.replace("–", "-")
+    m = re.fullmatch(r"(\d+)-(\d+)", spec)
+    if not m: raise ValueError(f"Invalid range: {spec}")
+    a, b = int(m.group(1)), int(m.group(2))
+    if a <= 0 or b <= 0: raise ValueError("Line numbers must be >= 1")
+    return smart, min(a,b), max(a,b)
 
-    seg_lines = lines[start_line - 1 : end_line]
-    if not seg_lines:
-        return ""
+def expand_roots(roots):
+    paths = []
+    missing = []
+    for r in roots:
+        if os.path.isfile(r):
+            paths.append(r)
+        elif os.path.isdir(r):
+            for root, dirs, files in os.walk(r):
+                dirs[:] = [d for d in dirs if d not in DEFAULT_IGNORE_DIRS]
+                for f in files:
+                    full_path = os.path.join(root, f)
+                    if type_filter == 'py' and not is_py_file(full_path):
+                        continue
+                    paths.append(full_path)
+        elif '*' in r or '?' in r:
+            # Glob expansion
+            expanded = glob.glob(r, recursive=True)
+            if not expanded:
+                missing.append(f"glob matched no files: {r}")
+                continue
+            for g in expanded:
+                if os.path.isfile(g):
+                    if type_filter == 'py' and not is_py_file(g):
+                        continue
+                    paths.append(g)
+                elif os.path.isdir(g):
+                     for root, dirs, files in os.walk(g):
+                        dirs[:] = [d for d in dirs if d not in DEFAULT_IGNORE_DIRS]
+                        for f in files:
+                            full_path = os.path.join(root, f)
+                            if type_filter == 'py' and not is_py_file(full_path):
+                                continue
+                            paths.append(full_path)
+        else:
+            missing.append(r)
+    
+    # Dedup and preserve discovery order
+    seen = set()
+    deduped = []
+    for p in paths:
+        abs_p = os.path.abspath(p)
+        if abs_p not in seen:
+            seen.add(abs_p)
+            deduped.append(p)
+    return deduped, missing
 
-    # Trim last line to end_col_offset to avoid capturing next statement.
-    if isinstance(end_col, int) and end_col >= 0:
-        seg_lines[-1] = seg_lines[-1][:end_col]
-
-    return "".join(seg_lines)
-
+# --- AST & Logic ---
 @dataclass(frozen=True)
 class FoundDef:
     qualname: str
@@ -260,28 +319,104 @@ class FoundDef:
 class FoundImport:
     node: ast.AST
 
-def provide_imported_names(node: ast.AST) -> Set[str]:
-    """
-    Return names bound by this import statement (best-effort).
-    For 'import a.b', Python binds 'a'. For aliases, binds alias name.
-    """
-    out: Set[str] = set()
-    if isinstance(node, ast.Import):
-        for alias in node.names:
-            if alias.asname:
-                out.add(alias.asname)
-            else:
-                # import pkg.mod -> binds 'pkg'
-                root = alias.name.split(".", 1)[0]
-                out.add(root)
-    elif isinstance(node, ast.ImportFrom):
-        for alias in node.names:
-            if alias.name == "*":
-                out.add("*")
-            elif alias.asname:
-                out.add(alias.asname)
-            else:
-                out.add(alias.name)
+class Extractor(ast.NodeVisitor):
+    def __init__(self, include_nested: bool, import_mode: str):
+        self.include_nested = include_nested
+        self.import_mode = import_mode
+        self.class_stack = []
+        self.func_stack = []
+        self.function_depth = 0
+        self.defs = []
+        self.imports = []
+
+    def _qualname_for(self, func_name):
+        return ".".join(self.class_stack + self.func_stack + [func_name])
+
+    def visit_Import(self, node):
+        if self.import_mode != "none" and self.function_depth == 0:
+            self.imports.append(FoundImport(node=node))
+        self.generic_visit(node)
+    def visit_ImportFrom(self, node):
+        if self.import_mode != "none" and self.function_depth == 0:
+            self.imports.append(FoundImport(node=node))
+        self.generic_visit(node)
+    def visit_ClassDef(self, node):
+        self.class_stack.append(node.name)
+        try: self.generic_visit(node)
+        finally: self.class_stack.pop()
+    def visit_FunctionDef(self, node):
+        self.defs.append(FoundDef(self._qualname_for(node.name), node.name, getattr(node, "lineno", 0), node))
+        if self.include_nested:
+            self.func_stack.append(node.name)
+            self.function_depth += 1
+            try: self.generic_visit(node)
+            finally: self.function_depth -= 1; self.func_stack.pop()
+    def visit_AsyncFunctionDef(self, node):
+        self.defs.append(FoundDef(self._qualname_for(node.name), node.name, getattr(node, "lineno", 0), node))
+        if self.include_nested:
+            self.func_stack.append(node.name)
+            self.function_depth += 1
+            try: self.generic_visit(node)
+            finally: self.function_depth -= 1; self.func_stack.pop()
+
+def node_span(node):
+    return (getattr(node, "lineno", 10**18), getattr(node, "col_offset", 0),
+            getattr(node, "end_lineno", getattr(node, "lineno", 10**18)), getattr(node, "end_col_offset", 0))
+
+def get_full_code(source_lines, node):
+    if not hasattr(node, "lineno"): return ""
+    start = node.lineno
+    end = node.end_lineno
+    decs = getattr(node, "decorator_list", [])
+    for d in decs:
+        if hasattr(d, "lineno"): start = min(start, d.lineno)
+    
+    seg = source_lines[start-1:end]
+    if not seg: return ""
+    if hasattr(node, "end_col_offset") and node.end_col_offset is not None:
+         seg[-1] = seg[-1][:node.end_col_offset]
+    return "".join(seg)
+
+def contains_range(node, start, end):
+    return getattr(node, "lineno", 9e9) <= start and getattr(node, "end_lineno", -1) >= end
+
+def pick_best_enclosing(tree, start, end):
+    candidates = []
+    # Only include blocks, excluding single-line statements like Assign/Expr
+    check_types = (
+        ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef,
+        ast.If, ast.For, ast.AsyncFor, ast.While,
+        ast.With, ast.AsyncWith, ast.Try
+    )
+    # Py3.10+ Match
+    if sys.version_info >= (3, 10):
+        if hasattr(ast, 'Match'): check_types += (ast.Match,)
+
+    for n in ast.walk(tree):
+        if isinstance(n, check_types):
+            if contains_range(n, start, end):
+                candidates.append(n)
+    if not candidates: return None
+    
+    # Priority: Function/Class > Other Blocks > ...
+    # Smallest span wins (most specific).
+    def priority(n):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)): return 0
+        return 1
+    
+    candidates.sort(key=lambda n: (n.end_lineno - n.lineno, priority(n), n.lineno))
+    return candidates[0]
+
+def dedup_defs(defs):
+    defs_sorted = sorted(defs, key=lambda d: node_span(d.node))
+    seen = set()
+    out = []
+    for d in defs_sorted:
+        sp = node_span(d.node)
+        if sp in seen:
+            continue
+        seen.add(sp)
+        out.append(d)
     return out
 
 class UsedNameCollector(ast.NodeVisitor):
@@ -289,7 +424,6 @@ class UsedNameCollector(ast.NodeVisitor):
         self.names: Set[str] = set()
 
     def _root_name(self, expr: ast.AST) -> None:
-        """Extract and collect the root name from an expression chain."""
         while isinstance(expr, (ast.Attribute, ast.Subscript)):
             expr = expr.value
         if isinstance(expr, ast.Name):
@@ -299,311 +433,261 @@ class UsedNameCollector(ast.NodeVisitor):
         self.names.add(node.id)
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
-        # Capture the root name in chained attributes: pkg.mod.func -> "pkg"
+        # Only capture root name to avoid over-matching attribute names
         self._root_name(node.value)
         self.generic_visit(node)
 
     def visit_Subscript(self, node: ast.Subscript) -> None:
-        # Capture root name in subscripts: mod["x"] -> "mod"
         self._root_name(node.value)
         self.generic_visit(node)
 
-class Extractor(ast.NodeVisitor):
-    def __init__(self, include_nested: bool, import_mode: str):
-        self.include_nested = include_nested
-        self.import_mode = import_mode
-
-        self.class_stack: List[str] = []
-        self.func_stack: List[str] = []
-        self.function_depth = 0  # to avoid collecting imports inside functions
-
-        self.defs: List[FoundDef] = []
-        self.imports: List[FoundImport] = []
-
-    def _qualname_for(self, func_name: str) -> str:
-        parts = []
-        parts.extend(self.class_stack)
-        parts.extend(self.func_stack)
-        parts.append(func_name)
-        return ".".join(parts)
-
-    # Imports: collect only at module/class scope (function_depth == 0)
-    def visit_Import(self, node: ast.Import) -> None:
-        if self.import_mode != "none" and self.function_depth == 0:
-            self.imports.append(FoundImport(node=node))
-        self.generic_visit(node)
-
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        if self.import_mode != "none" and self.function_depth == 0:
-            self.imports.append(FoundImport(node=node))
-        self.generic_visit(node)
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        self.class_stack.append(node.name)
-        try:
-            self.generic_visit(node)
-        finally:
-            self.class_stack.pop()
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        qn = self._qualname_for(node.name)
-        self.defs.append(FoundDef(qualname=qn, name=node.name, lineno=getattr(node, "lineno", 0), node=node))
-
-        # Descend into function bodies only if include_nested
-        if self.include_nested:
-            self.func_stack.append(node.name)
-            self.function_depth += 1
-            try:
-                self.generic_visit(node)
-            finally:
-                self.function_depth -= 1
-                self.func_stack.pop()
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        qn = self._qualname_for(node.name)
-        self.defs.append(FoundDef(qualname=qn, name=node.name, lineno=getattr(node, "lineno", 0), node=node))
-
-        if self.include_nested:
-            self.func_stack.append(node.name)
-            self.function_depth += 1
-            try:
-                self.generic_visit(node)
-            finally:
-                self.function_depth -= 1
-                self.func_stack.pop()
-
-# Run extraction
-ex = Extractor(include_nested=include_nested, import_mode=import_mode)
-ex.visit(tree)
-
-# Sort/dedup defs in stable source order
-defs_sorted = sorted(ex.defs, key=lambda d: node_span(d.node))
-deduped: List[FoundDef] = []
-seen_spans = set()
-for d in defs_sorted:
-    sp = node_span(d.node)
-    if sp in seen_spans:
-        continue
-    seen_spans.add(sp)
-    deduped.append(d)
-
-all_qualnames = [d.qualname for d in deduped]
-
-def format_list(items: List[FoundDef]) -> str:
-    out = []
-    for d in items:
-        out.append(f"{d.qualname}  (line {d.lineno})")
-    return "\n".join(out)
-
-# Regex handling
+# --- Main Processing ---
 regex = None
-if regex_pat is not None:
+if regex_pat:
     try:
         regex = re.compile(regex_pat)
     except re.error as e:
         print(f"Error: invalid regex: {regex_pat}", file=sys.stderr)
         print(f"  {e}", file=sys.stderr)
-        raise SystemExit(2)
+        sys.exit(2)
 
-def matches(defn: FoundDef) -> bool:
-    if regex is not None:
-        return bool(regex.search(defn.qualname))
-    if target and "." in target:
-        return defn.qualname == target
-    if target:
-        return defn.name == target
-    return False
+def process_file(path):
+    # Returns (matches, errors)
+    try:
+        with tokenize.open(path) as f:
+            source = f.read()
+    except Exception as e:
+        print(f"Error reading {path}: {e}", file=sys.stderr)
+        return [], True
 
-# --list mode
-if list_mode:
-    items = deduped
-    if regex is not None:
-        items = [d for d in items if matches(d)]
-    if items:
-        print(format_list(items))
-        raise SystemExit(0)
-    else:
-        print("(no matches)", file=sys.stderr)
-        raise SystemExit(1)
+    lines = source.splitlines(True)
+    
+    # Check type filter for explicit files as well
+    if type_filter == 'py' and not is_py_file(path):
+        if not line_mode:
+             # Skip silent or warn? Just skip to match glob behavior.
+             return [], False
 
-# Extraction mode: determine selected defs
-selected = [d for d in deduped if matches(d)]
-
-def friendly_not_found() -> None:
-    print(f"Couldn't find a match in: {filename}", file=sys.stderr)
-    if regex is not None:
-        print(f"  Regex: {regex_pat!r}", file=sys.stderr)
-        print("", file=sys.stderr)
-        print("Try:", file=sys.stderr)
-        print(f"  ./print_function.sh --list --all --regex {regex_pat!r} {filename}", file=sys.stderr)
-    else:
-        print(f"  Target: {target!r}", file=sys.stderr)
+    # Line Mode
+    if line_mode:
+        try:
+            smart, start, end = parse_line_spec(line_spec)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return [], True
         
-        # Check if the target would be found with --all
-        if not include_nested and target:
-            # Re-run extraction with nested=True to see if we'd find it
-            ex_nested = Extractor(include_nested=True, import_mode="none")
-            ex_nested.visit(tree)
-            defs_nested = sorted(ex_nested.defs, key=lambda d: node_span(d.node))
-            deduped_nested: List[FoundDef] = []
-            seen_nested = set()
-            for d in defs_nested:
-                sp = node_span(d.node)
-                if sp in seen_nested:
-                    continue
-                seen_nested.add(sp)
-                deduped_nested.append(d)
-            
-            # Check if target would match with --all
-            matched_defs = []
-            for d in deduped_nested:
-                if (target and "." in target and d.qualname == target) or \
-                   (target and "." not in target and d.name == target):
-                    matched_defs.append(d)
-            
-            if matched_defs:
-                print("", file=sys.stderr)
-                print("*** FOUND IT! ***", file=sys.stderr)
-                
-                # Show all matches with their parent context
-                for d in matched_defs:
-                    parts = d.qualname.split(".")
-                    if len(parts) > 1:
-                        parent = ".".join(parts[:-1])
-                        print(f"'{d.name}' is nested inside: {parent}", file=sys.stderr)
-                    else:
-                        print(f"'{d.name}' found at: {d.qualname}", file=sys.stderr)
-                
-                print("", file=sys.stderr)
-                print(f"By default, this tool does not search functions defined inside other functions.", file=sys.stderr)
-                print("Use --all to include nested functions.", file=sys.stderr)
-                print("", file=sys.stderr)
-                print("Run with --all to search nested functions:", file=sys.stderr)
-                print(f"  ./print_function.sh --all {filename} {target}", file=sys.stderr)
-                print("", file=sys.stderr)
-                print("Or list all nested functions:", file=sys.stderr)
-                print(f"  ./print_function.sh --list --all {filename}", file=sys.stderr)
-                raise SystemExit(1)
+        if not smart:
+            s = max(1, start - context_lines)
+            e = min(len(lines), end + context_lines)
+            block = "".join(lines[s-1:e]).rstrip("\n")
+            ctx_info = f" (+{context_lines} context)" if context_lines > 0 else ""
+            header = f"==> {path}:lines {start}-{end}{ctx_info} <=="
+            return [(header, block)], False
         
-        print("", file=sys.stderr)
-        print("Tips:", file=sys.stderr)
-        print(f"  • List available definitions:", file=sys.stderr)
-        print(f"      ./print_function.sh --list {filename}", file=sys.stderr)
-        print(f"      ./print_function.sh --list --all {filename}    # include nested", file=sys.stderr)
-        if target and "." not in target:
-            print(f"  • If you meant a method, try a qualified name like:", file=sys.stderr)
-            print(f"      ./print_function.sh {filename} MyClass.{target}", file=sys.stderr)
-        print(f"  • Use regex matching:", file=sys.stderr)
-        escaped = re.escape(target) if target else "name"
-        print(f'      ./print_function.sh --regex "(^|\\.){escaped}$" {filename}', file=sys.stderr)
+        if not is_py_file(path):
+            # Fallback smart mode
+            PAD = 25 if context_lines == 0 else context_lines
+            s = max(1, start - PAD)
+            e = min(len(lines), end + PAD)
+            block = "".join(lines[s-1:e]).rstrip("\n")
+            ctx_info = f" (+{PAD} context)" 
+            header = f"==> {path}:lines {start}-{end}{ctx_info} (padded) <=="
+            return [(header, block)], False
+    
+    # AST Mode: Only parse Python source files if not in line mode.
+    if not line_mode and not is_py_file(path):
+        return [], False
 
-    # Suggestions
-    if all_qualnames:
-        if regex is None and target:
-            # Suggest close qualified names and also close bare names
-            close = difflib.get_close_matches(target, all_qualnames, n=8, cutoff=0.5)
-            if not close and "." not in target:
-                bare = sorted({d.name for d in deduped})
-                close_bare = difflib.get_close_matches(target, bare, n=8, cutoff=0.6)
-                if close_bare:
-                    print("", file=sys.stderr)
-                    print("Did you mean one of these function names?", file=sys.stderr)
-                    for c in close_bare:
-                        print(f"  - {c}", file=sys.stderr)
-            elif close:
-                print("", file=sys.stderr)
-                print("Closest matches (fully-qualified):", file=sys.stderr)
-                for c in close:
-                    print(f"  - {c}", file=sys.stderr)
+    try:
+        tree = ast.parse(source, filename=path)
+    except Exception as e:
+        print(f"Error parsing {path}: {e}", file=sys.stderr)
+        return [], True
 
-        print("", file=sys.stderr)
-        print("Hint: run with --list to see everything this tool can find.", file=sys.stderr)
+    # Smart Line Mode (AST)
+    if line_mode: 
+        smart, start, end = parse_line_spec(line_spec)
+        node = pick_best_enclosing(tree, start, end)
+        if node:
+            if context_lines > 0:
+                s = max(1, node.lineno - context_lines)
+                e = min(len(lines), node.end_lineno + context_lines)
+                code = "".join(lines[s-1:e]).rstrip("\n")
+                ctx_info = f" (+{context_lines} context)"
+            else:
+                code = get_full_code(lines, node).rstrip("\n")
+                ctx_info = ""
+            
+            name = getattr(node, "name", "unknown")
+            lineno = getattr(node, "lineno", start)
+            header = f"==> {path}:{name} (line {lineno}){ctx_info} <=="
+            return [(header, code)], False
+        else:
+            PAD = 25 if context_lines == 0 else context_lines
+            s = max(1, start - PAD)
+            e = min(len(lines), end + PAD)
+            block = "".join(lines[s-1:e]).rstrip("\n")
+            ctx_info = f" (+{PAD} context)" 
+            header = f"==> {path}:lines {start}-{end}{ctx_info} (padded) <=="
+            return [(header, block)], False
 
-    raise SystemExit(1)
+    # Function Extraction Mode
+    ex = Extractor(include_nested=include_nested, import_mode=import_mode)
+    ex.visit(tree)
+    
+    all_defs = dedup_defs(ex.defs)
+    
+    # Filter
+    matched_defs = []
+    if list_mode:
+        if not regex and not target:
+             matched_defs = all_defs
+        else:
+             def is_match_list(d):
+                 if regex: return bool(regex.search(d.qualname))
+                 if target and "." in target: return d.qualname == target
+                 if target: return d.name == target
+                 return False
+             matched_defs = [d for d in all_defs if is_match_list(d)]
+        
+        out_data = []
+        for d in matched_defs:
+            out_data.append((d.qualname, d.lineno))
+        
+        if out_data:
+            return out_data, False 
+        return [], False
+    
+    def is_match(d):
+        if regex: return bool(regex.search(d.qualname))
+        if target and "." in target: return d.qualname == target
+        if target: return d.name == target
+        return False
+    
+    matched_defs = [d for d in all_defs if is_match(d)]
+    
+    if first_only and matched_defs:
+        matched_defs = matched_defs[:1]
+    
+    # Imports
+    imports_out = []
+    if import_mode != "none":
+        imports_sorted = sorted(ex.imports, key=lambda i: node_span(i.node))
+        if import_mode == "all":
+            imports_out = imports_sorted
+        else:
+            used_names = set()
+            for d in matched_defs:
+                c = UsedNameCollector()
+                c.visit(d.node)
+                used_names |= c.names
 
-if not selected:
-    friendly_not_found()
+            for imp in imports_sorted:
+                out = set()
+                if isinstance(imp.node, ast.Import):
+                    for a in imp.node.names: out.add(a.asname or a.name.split('.')[0])
+                elif isinstance(imp.node, ast.ImportFrom):
+                     for a in imp.node.names: 
+                        if a.name == "*":
+                            out.add("*")
+                        else:
+                            out.add(a.asname or a.name)
+                
+                if "*" in out or (out & used_names):
+                    imports_out.append(imp)
 
-# Show match count to stderr if outputting to TTY (before --first truncation)
-total_matches = len(selected)
-if total_matches > 1 and sys.stderr.isatty():
-    preview_count = 3
-    names = ", ".join(f"{d.qualname} (line {d.lineno})" for d in selected[:preview_count])
-    if total_matches > preview_count:
-        remaining = total_matches - preview_count
-        names += f", ... ({remaining} more)"
-    msg = f"Found {total_matches} definitions: {names}"
-    if first_only:
-        msg += " (printing first due to --first)"
-    print(msg, file=sys.stderr)
-    print("", file=sys.stderr)
+    output_blocks = []
+    
+    imp_code = ""
+    if imports_out and matched_defs:
+        imp_code = "\n".join([get_full_code(lines, i.node).rstrip() for i in imports_out])
+        if imp_code:
+            imp_code += "\n\n" + ("#" * 20) + "\n\n"
 
-# --first option
-if first_only:
-    selected = selected[:1]
+    for i, d in enumerate(matched_defs):
+        code = get_full_code(lines, d.node).rstrip("\n")
+        if i == 0 and imp_code:
+            code = imp_code + code
+            
+        header = f"==> {path}:{d.qualname} (line {d.lineno}) <=="
+        output_blocks.append((header, code))
+        
+    return output_blocks, False
 
-# Imports
-imports_out: List[FoundImport] = []
-if import_mode != "none":
-    imports_sorted = sorted(ex.imports, key=lambda imp: node_span(imp.node))
+# --- Run ---
+file_list, missing_list = expand_roots(roots)
+any_match = False
+had_error = False
 
-    if import_mode == "all":
-        imports_out = imports_sorted
+# Print warnings for missing roots (non-fatal)
+for m in missing_list:
+    if "glob matched no files" in m:
+        print(f"Warning: {m}", file=sys.stderr)
     else:
-        # used mode: keep imports that provide any names used in the selected function(s)
-        used_names: Set[str] = set()
-        for d in selected:
-            c = UsedNameCollector()
-            c.visit(d.node)
-            used_names |= c.names
+        print(f"Warning: file not found: {m}", file=sys.stderr)
 
-        for imp in imports_sorted:
-            provided = provide_imported_names(imp.node)
-            if "*" in provided:
-                # star-import: conservative; include
-                imports_out.append(imp)
-                continue
-            if provided & used_names:
-                imports_out.append(imp)
+for path in file_list:
+    matches, error = process_file(path)
+    if error:
+        had_error = True
+    
+    if matches:
+        any_match = True
+        
+        if list_mode:
+            print(f"==> {path} <==")
+            # Dynamic alignment based on qualnames in THIS file
+            max_qn = max((len(qn) for qn, ln in matches), default=0)
+            col_width = max(max_qn + 4, 40)
+            for qn, ln in matches:
+                print(f"{qn:<{col_width}} line {ln}")
+            print() 
+        else:
+            for header, code in matches:
+                print(header)
+                print(code)
+                print()
 
-# Print imports (if any)
-if imports_out:
-    for imp in imports_out:
-        print(get_full_code(imp.node).rstrip("\n"))
-    print("\n" + "#" * 20 + "\n")
+if not any_match:
+    if target and type_filter == 'py' and not list_mode and sys.stderr.isatty():
+         print("Tip: run with --list to see available definitions.", file=sys.stderr)
+    sys.exit(2 if had_error else 1)
 
-# Print selected function(s)
-for i, d in enumerate(selected):
-    print(get_full_code(d.node).rstrip("\n"))
-    if i < len(selected) - 1:
-        print()
+sys.exit(0)
 PY
 }
 
 # --- Output Handling ---
-# With `set -euo pipefail`, we need to capture the extractor's exit code
-# without the pipeline causing an immediate exit.
 run_with_optional_highlighting() {
     if [ -t 1 ]; then
         local -a highlighter=(cat)
         if command -v bat >/dev/null 2>&1; then
-            highlighter=(bat --color=always --language=python --style=plain --paging=never)
+             # Default to plain for multi-file mixed content
+             highlighter=(bat --color=always --style=plain --paging=never)
+             
+             # Heuristic: if filtering for PY only and NOT line mode, try python highlighting
+             if [ "$TYPE_FILTER" = "py" ] && [ "$LINE_MODE" != "true" ]; then
+                 highlighter=(bat --color=always --language=python --style=plain --paging=never)
+             fi
         elif command -v batcat >/dev/null 2>&1; then
-            highlighter=(batcat --color=always --language=python --style=plain --paging=never)
+             highlighter=(batcat --color=always --style=plain --paging=never)
+             if [ "$TYPE_FILTER" = "py" ] && [ "$LINE_MODE" != "true" ]; then
+                 highlighter=(batcat --color=always --language=python --style=plain --paging=never)
+             fi
         elif command -v pygmentize >/dev/null 2>&1; then
-            highlighter=(pygmentize -l python)
+             if [ "$TYPE_FILTER" = "py" ] && [ "$LINE_MODE" != "true" ]; then
+                 highlighter=(pygmentize -l python)
+             else
+                 highlighter=(pygmentize -g)
+             fi
         fi
-
+        
         set +e
         extract_code | "${highlighter[@]}"
         local -a statuses=("${PIPESTATUS[@]}")
         set -e
-        if [ "${statuses[0]}" -ne 0 ]; then
-            return "${statuses[0]}"
-        fi
-        if [ "${statuses[1]}" -ne 0 ]; then
-            return "${statuses[1]}"
-        fi
+        if [ "${statuses[0]}" -ne 0 ]; then return "${statuses[0]}"; fi
+        if [ "${statuses[1]}" -ne 0 ]; then return "${statuses[1]}"; fi
         return 0
     else
         extract_code
@@ -612,3 +696,4 @@ run_with_optional_highlighting() {
 
 run_with_optional_highlighting
 exit $?
+
