@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.3.1] - 2026-01-26
+
+### Added
+- **File:range syntax** for easy pasting from Claude Code output or error messages:
+  - `app.py:100-200` extracts lines 100-200 from app.py
+  - `app.py:~100-200` extracts smart context around lines 100-200
+  - Useful for quickly viewing code referenced in IDE output or error messages
+
+### Fixed
+- **--at option improvements:**
+  - Help text now explicitly states that `--at PATTERN` uses regex matching
+  - Added validation to prevent incompatible combinations: `--at` with `--regex`, `--list`, or a positional QUERY
+  - Per-file non-matches are silent (normal behavior); overall no-match exits with code 1
+  - Improved code clarity: restructured variable flow for line mode resolution
+
 ## [1.2] - 2026-01-25
 
 ### Added

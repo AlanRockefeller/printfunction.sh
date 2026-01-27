@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./printfunction.sh:*)",
+      "Bash(echo:*)"
+    ]
+  }
+}
