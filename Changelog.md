@@ -1,6 +1,15 @@
 # Changelog
 
-## [1.3.1] - 2026-01-26
+## gitdiffshow [1.0.1] - 2026-01-27
+
+### Added to gitdiffshow
+- **Color control flags:**
+  - `--color` / `--no-color` (alias `-n`) to force or disable ANSI color output.
+  - Useful for copying output into AI tools or logs.
+- **Pager disabling:**
+  - Pagers (like `less`) are now explicitly disabled for `git diff` and syntax highlighting tools (`bat`, etc.) to ensure direct terminal output.
+
+## printfunction.sh [1.3.1] - 2026-01-26
 
 ### Added
 - **File:range syntax** for easy pasting from Claude Code output or error messages:
@@ -15,7 +24,7 @@
   - Per-file non-matches are silent (normal behavior); overall no-match exits with code 1
   - Improved code clarity: restructured variable flow for line mode resolution
 
-## [1.2] - 2026-01-25
+## printfunction.sh [1.2] - 2026-01-25
 
 ### Added
 - Added gitdiffshow - shows context around the diffs displayed by git diff
@@ -38,7 +47,7 @@
 
 
 
-## [1.1] - 2026-01-25
+## printfunction.sh [1.1] - 2026-01-25
 ### Added
 - Line-range output mode for any file type:
   - `lines START-END` prints an inclusive numbered range.
