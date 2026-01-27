@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# printfunction.sh version 1.2
-# Alan Rockefeller - January 25, 2026
+# printfunction.sh version 1.3.1
+# Alan Rockefeller - January 26, 2026
 
 set -euo pipefail
 
@@ -20,6 +20,8 @@ Targeting:
       ClassName.method   (Method name)
       lines START-END    (Line range)
       ~START-END         (Smart context range)
+      file.py:100-200    (File with line range - paste from Claude Code output)
+      file.py:~100-200   (File with smart context range)
   - If --regex is used, the pattern is provided via the option, so no QUERY argument is needed.
 
 Matching:
@@ -43,6 +45,11 @@ Options:
 
   --regex PATTERN       Match by regex against fully-qualified names
 
+  --at PATTERN          Find the first line matching regex PATTERN and extract the surrounding
+                        function/class (Python) or a padded snippet (other files).
+                        Replaces QUERY. Cannot be combined with QUERY, lines START-END / ~START-END,
+                        --regex, or --list.
+
   -h, --help            Show this help message
 
 Examples:
@@ -60,6 +67,13 @@ Examples:
 
   # Smart context extraction
   ./printfunction.sh ~10-20 file1.py
+
+  # Extract lines from file (paste from Claude Code output)
+  ./printfunction.sh app.py:3343-3414
+
+  # Find function containing 'cached_preview'
+  ./printfunction.sh --at 'cached_preview' faststack/app.py
+
 HELP
     exit 0
 fi
@@ -69,6 +83,7 @@ INCLUDE_NESTED="false"
 FIRST_ONLY="false"
 LIST_MODE="false"
 REGEX_PATTERN=""
+AT_PATTERN=""
 IMPORT_MODE="none"
 TYPE_FILTER="py"
 CONTEXT_LINES=0
@@ -83,6 +98,10 @@ while [ $# -gt 0 ]; do
             shift
             if [ $# -eq 0 ]; then echo "Error: --regex requires a PATTERN" >&2; exit 2; fi
             REGEX_PATTERN="$1"; shift ;;
+        --at) 
+            shift
+            if [ $# -eq 0 ]; then echo "Error: --at requires a PATTERN" >&2; exit 2; fi
+            AT_PATTERN="$1"; shift ;;
         --import|--imports) IMPORT_MODE="all"; shift ;;
         --import=all|--imports=all) IMPORT_MODE="all"; shift ;;
         --import=used|--imports=used) IMPORT_MODE="used"; shift ;;
@@ -141,6 +160,24 @@ for ((i=0; i<${#POSITIONAL_ARGS[@]}; i++)); do
 
     arg="${POSITIONAL_ARGS[$i]}"
 
+    # Check for file:range syntax (e.g., app.py:100-200 or app.py:~100-200)
+    if [[ "$arg" =~ ^(.+):(~?[0-9]+[-–][0-9]+)$ ]]; then
+        filename="${BASH_REMATCH[1]}"
+        range="${BASH_REMATCH[2]}"
+        if [ ! -e "$filename" ]; then
+            echo "Error: file not found in 'file:range' syntax: $filename" >&2
+            exit 2
+        fi
+        if [ "$LINE_MODE" = "true" ]; then
+            echo "Error: multiple line ranges specified" >&2
+            exit 2
+        fi
+        LINE_MODE="true"
+        LINE_SPEC="$range"
+        SEARCH_ROOTS+=("$filename")
+        continue
+    fi
+
     # Check for direct file/dir existence
     if [ -e "$arg" ]; then
         SEARCH_ROOTS+=("$arg")
@@ -150,7 +187,7 @@ for ((i=0; i<${#POSITIONAL_ARGS[@]}; i++)); do
     # Check for smart line range (if not already found and no query set)
     # Only treat bare range as line mode if we don't have a query yet (and not regex/list mode)
     HAS_QUERY_OR_MODE="false"
-    if [ -n "$REGEX_PATTERN" ] || [ "$LIST_MODE" = "true" ] || [ -n "$QUERY" ] || [ "$LINE_MODE" = "true" ]; then
+    if [ -n "$REGEX_PATTERN" ] || [ -n "$AT_PATTERN" ] || [ "$LIST_MODE" = "true" ] || [ -n "$QUERY" ] || [ "$LINE_MODE" = "true" ]; then
         HAS_QUERY_OR_MODE="true"
     fi
 
@@ -172,7 +209,7 @@ for ((i=0; i<${#POSITIONAL_ARGS[@]}; i++)); do
     else
         # If it's not a file/dir, and we need a query, assume this is it.
         # But if --regex is set, we don't want a positional query.
-        if [ -n "$REGEX_PATTERN" ]; then
+        if [ -n "$REGEX_PATTERN" ] || [ -n "$AT_PATTERN" ]; then
             SEARCH_ROOTS+=("$arg")
         else
             # Check if it looks like a glob though?
@@ -186,9 +223,29 @@ for ((i=0; i<${#POSITIONAL_ARGS[@]}; i++)); do
 done
 
 # Validation
-if [ "$LIST_MODE" != "true" ] && [ -z "$REGEX_PATTERN" ] && [ -z "$QUERY" ] && [ "$LINE_MODE" != "true" ]; then
-    echo "Error: Missing FUNCTION_NAME (or use --regex / --list / lines START-END)" >&2
+if [ "$LIST_MODE" != "true" ] && [ -z "$REGEX_PATTERN" ] && [ -z "$AT_PATTERN" ] && [ -z "$QUERY" ] && [ "$LINE_MODE" != "true" ]; then
+    echo "Error: Missing FUNCTION_NAME (or use --at / --regex / --list / lines START-END)" >&2
     exit 2
+fi
+
+# Check for incompatible option combinations
+if [ -n "$AT_PATTERN" ]; then
+    if [ -n "$REGEX_PATTERN" ]; then
+        echo "Error: --at and --regex cannot be used together" >&2
+        exit 2
+    fi
+    if [ "$LIST_MODE" = "true" ]; then
+        echo "Error: --at and --list cannot be used together" >&2
+        exit 2
+    fi
+    if [ -n "$QUERY" ]; then
+        echo "Error: --at replaces QUERY; do not provide both" >&2
+        exit 2
+    fi
+    if [ "$LINE_MODE" = "true" ]; then
+        echo "Error: --at and explicit line ranges cannot be used together" >&2
+        exit 2
+    fi
 fi
 
 if [ ${#SEARCH_ROOTS[@]} -eq 0 ]; then
@@ -203,6 +260,7 @@ export PF_INCLUDE_NESTED="$INCLUDE_NESTED"
 export PF_IMPORT_MODE="$IMPORT_MODE"
 export PF_LIST_MODE="$LIST_MODE"
 export PF_REGEX_PATTERN="$REGEX_PATTERN"
+export PF_AT_PATTERN="$AT_PATTERN"
 export PF_FIRST_ONLY="$FIRST_ONLY"
 export PF_LINE_MODE="$LINE_MODE"
 export PF_LINE_SPEC="$LINE_SPEC"
@@ -226,6 +284,7 @@ include_nested = os.environ["PF_INCLUDE_NESTED"] == "true"
 import_mode = os.environ["PF_IMPORT_MODE"]
 list_mode = os.environ["PF_LIST_MODE"] == "true"
 regex_pat = os.environ["PF_REGEX_PATTERN"] or None
+at_pattern_str = os.environ.get("PF_AT_PATTERN") or None
 first_only = os.environ["PF_FIRST_ONLY"] == "true"
 line_mode = os.environ["PF_LINE_MODE"] == "true"
 line_spec = os.environ["PF_LINE_SPEC"]
@@ -451,6 +510,15 @@ if regex_pat:
         print(f"  {e}", file=sys.stderr)
         sys.exit(2)
 
+at_regex = None
+if at_pattern_str:
+    try:
+        at_regex = re.compile(at_pattern_str)
+    except re.error as e:
+        print(f"Error: invalid --at regex: {at_pattern_str}", file=sys.stderr)
+        print(f"  {e}", file=sys.stderr)
+        sys.exit(2)
+
 def process_file(path):
     # Returns (matches, errors)
     try:
@@ -464,24 +532,52 @@ def process_file(path):
     
     # Check type filter for explicit files as well
     if type_filter == 'py' and not is_py_file(path):
-        if not line_mode:
+        if not line_mode and not at_regex:
              # Skip silent or warn? Just skip to match glob behavior.
              return [], False
 
-    # Line Mode
-    if line_mode:
+    # Determine mode and line range (fixes issue #4: clearer control flow)
+    current_line_mode = line_mode
+    smart = False
+    start = end = -1
+    at_match_lineno = None  # set only when --at is used
+
+    # Resolve --at pattern to line mode
+    if at_regex:
+        found_lineno = -1
+        for i, line in enumerate(lines):
+             if at_regex.search(line):
+                 found_lineno = i + 1
+                 break
+        if found_lineno == -1:
+            # Pattern not in this file - silent per-file non-match is normal
+            return [], False
+
+        current_line_mode = True
+        smart = True
+        start = end = found_lineno
+        at_match_lineno = found_lineno
+
+    # Parse explicit line mode arguments
+    elif line_mode:
         try:
             smart, start, end = parse_line_spec(line_spec)
         except ValueError as e:
             print(f"Error: {e}", file=sys.stderr)
             return [], True
-        
+
+    # Suffixes for --at matching
+    match_suffix_paren = f" (match line {at_match_lineno})" if at_match_lineno else ""
+    match_suffix_semi = f"; match line {at_match_lineno}" if at_match_lineno else ""
+
+    # Line Mode Processing
+    if current_line_mode:
         if not smart:
             s = max(1, start - context_lines)
             e = min(len(lines), end + context_lines)
             block = "".join(lines[s-1:e]).rstrip("\n")
             ctx_info = f" (+{context_lines} context)" if context_lines > 0 else ""
-            header = f"==> {path}:lines {start}-{end}{ctx_info} <=="
+            header = f"==> {path}:lines {start}-{end}{ctx_info}{match_suffix_paren} <=="
             return [(header, block)], False
         
         if not is_py_file(path):
@@ -491,11 +587,11 @@ def process_file(path):
             e = min(len(lines), end + PAD)
             block = "".join(lines[s-1:e]).rstrip("\n")
             ctx_info = f" (+{PAD} context)" 
-            header = f"==> {path}:lines {start}-{end}{ctx_info} (padded) <=="
+            header = f"==> {path}:lines {start}-{end}{ctx_info}{match_suffix_paren} (padded) <=="
             return [(header, block)], False
     
     # AST Mode: Only parse Python source files if not in line mode.
-    if not line_mode and not is_py_file(path):
+    if not current_line_mode and not is_py_file(path):
         return [], False
 
     try:
@@ -505,8 +601,8 @@ def process_file(path):
         return [], True
 
     # Smart Line Mode (AST)
-    if line_mode: 
-        smart, start, end = parse_line_spec(line_spec)
+    if current_line_mode: 
+        # smart, start, end already resolved
         node = pick_best_enclosing(tree, start, end)
         if node:
             if context_lines > 0:
@@ -520,7 +616,7 @@ def process_file(path):
             
             name = getattr(node, "name", "unknown")
             lineno = getattr(node, "lineno", start)
-            header = f"==> {path}:{name} (line {lineno}){ctx_info} <=="
+            header = f"==> {path}:{name} (line {lineno}{match_suffix_semi}){ctx_info} <=="
             return [(header, code)], False
         else:
             PAD = 25 if context_lines == 0 else context_lines
@@ -528,7 +624,7 @@ def process_file(path):
             e = min(len(lines), end + PAD)
             block = "".join(lines[s-1:e]).rstrip("\n")
             ctx_info = f" (+{PAD} context)" 
-            header = f"==> {path}:lines {start}-{end}{ctx_info} (padded) <=="
+            header = f"==> {path}:lines {start}-{end}{ctx_info}{match_suffix_paren} (padded) <=="
             return [(header, block)], False
 
     # Function Extraction Mode

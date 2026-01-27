@@ -1,12 +1,13 @@
-# printfunction.sh  
-# Version 1.2  
-# By Alan Rockefeller — January 25, 2026  
+# printfunction.sh
+# Version 1.3.1
+# By Alan Rockefeller — January 26, 2026  
 
 **Extract Python functions with surgical precision using AST parsing.**
 
 A command-line tool that uses Python’s abstract syntax tree to extract function and method definitions from source files. Unlike `grep` or `sed`, it understands Python structure—handling decorators, multi-line definitions, and nested scopes correctly.
 
-As of **v1.2**, it also supports **multi-file searching, directory recursion, globs, regex targeting, and line-range extraction**.
+As of **v1.2+**, it supports multi-file searching, directory recursion, globs, regex targeting, and line-range extraction.
+**v1.3.1** adds `--at PATTERN` to find enclosing blocks by content match.
 
 ---
 
@@ -20,6 +21,9 @@ mv printfunction ~/.local/bin/  # or /usr/local/bin with sudo
 
 # Extract a function from one file
 printfunction foo myfile.py
+
+# Find the function containing a specific string
+printfunction --at "cached_preview" myfile.py
 
 # Search across multiple files
 printfunction foo a.py b.py
@@ -59,13 +63,14 @@ printfunction MyClass.process myfile.py  # Complete, accurate, always works
 
 ## What changed since v1.0?
 
-v1.2 expands `printfunction` from “single-file function extractor” into a **small codebase search tool**:
+v1.3.1 expands `printfunction` from “single-file function extractor” into a **small codebase search tool**:
 
 - **New calling convention:** `printfunction [OPTIONS] [QUERY] [FILES...]`
 - **Multi-file output with per-file headers**
 - **Recursive directory scanning** with sensible default ignores
 - **Glob support** (including `**/*.py` with `recursive=True` in Python)
 - **Regex mode** via `--regex` (no positional QUERY required)
+- **Content-based targeting** via `--at PATTERN` (finds enclosing block around match)
 - **Line range extraction** (`lines START-END`) and **smart block extraction** (`~START-END`)
 - **Context lines** for line-mode matches (`--context N`)
 - **File type filter** (`--type py` default, or `--type all`)
@@ -81,6 +86,7 @@ v1.2 expands `printfunction` from “single-file function extractor” into a **
   - `--import=all` prints module/class-scope imports
   - `--import=used` prints a best-effort subset used by matched function(s)
 - **Regex search** – `--regex` matches against fully-qualified names (`Class.method`, `outer.inner`, etc.)
+- **Content search** – `--at PATTERN` finds the first line matching a regex and extracts the surrounding function/class (Python) or padded lines (other files).
 - **Multi-file + recursive search** – Search across files, globs, or entire directories
 - **Line range extraction**
   - `lines START-END` extracts raw lines (optionally with `--context`)
@@ -136,10 +142,12 @@ The tool skips common junk folders during recursion (e.g. `.git`, `.venv`, `__py
 - `ClassName.method` — qualified method name
 - `lines START-END` — raw line extraction (works on any file type)
 - `~START-END` — smart block extraction (AST-aware for Python; padded fallback for non-Python)
+- `file.py:100-200` — file with line range (paste from Claude Code output)
+- `file.py:~100-200` — file with smart context range
 
 Notes:
 
-- If you use `--regex`, the pattern is provided via the option, so **no positional QUERY is required**.
+- If you use `--regex` or `--at`, the pattern is provided via the option, so **no positional QUERY is required**.
 - A bare range like `10-20` or `~10-20` is treated as line-mode **only if it’s the first “query-like” argument**.
 
 ---
@@ -159,6 +167,7 @@ Notes:
 | `--context N` | Add `N` lines of context around line-mode and smart line-mode output (default: `0`) |
 | `--list` | List names + line numbers instead of extracting (use with `--all` to include nested) |
 | `--regex PATTERN` | Match by regex against fully-qualified names |
+| `--at PATTERN` | Find first line matching regex PATTERN and extract enclosing block (Python) or padded lines (others) |
 | `-h, --help` | Show help message |
 
 ---
@@ -249,16 +258,38 @@ printfunction --context 5 lines 10-40 myfile.py
 
 ### 9) Smart block extraction (AST-aware)
 
-Extract the “best enclosing block” containing that range:
+Extract the "best enclosing block" containing that range:
 
 ```bash
 printfunction ~10-40 myfile.py
 ```
 
-With extra context around the chosen block:
+### 10) File:range syntax (paste from Claude Code)
+
+Extract lines directly from a file reference (useful for pasting from error messages or IDE output):
 
 ```bash
-printfunction --context 5 ~10-40 myfile.py
+printfunction app.py:3343-3414
+```
+
+Smart context with file:range syntax:
+
+```bash
+printfunction app.py:~100-200
+```
+
+### 11) Find enclosing block by content
+
+Find the function definition that contains a specific string (e.g. error message or variable):
+
+```bash
+printfunction --at "raise ValueError" myfile.py
+```
+
+Find a usage of a token in non-Python files (shows context):
+
+```bash
+printfunction --at "TODO" --type all .
 ```
 
 ---
@@ -307,6 +338,7 @@ pip install pygments
 5. **Match**
    - Direct name match (`foo`) or exact qualified match (`Class.method`)
    - Regex match over qualnames (`--regex`)
+   - Content match (`--at`) -> maps to smart line mode
 6. **Line mode**
    - `lines A-B`: raw line slice (optionally with `--context`)
    - `~A-B`: selects the best enclosing AST block (function/class/control block). If not Python, falls back to padded raw lines.
@@ -329,7 +361,7 @@ printfunction foo . # Correct
 
 ### “Missing FUNCTION_NAME”
 
-If you aren’t using `--regex`, `--list`, or line-mode, you need a query:
+If you aren’t using `--regex`, `--at`, `--list`, or line-mode, you need a query:
 
 ```bash
 printfunction .     # Error
