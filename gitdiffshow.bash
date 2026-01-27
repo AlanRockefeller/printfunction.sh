@@ -12,10 +12,14 @@
 # FLAGS:
 #   --printwholefile   Print the entire file with line numbers (old behavior)
 #   --all              Alias for --printwholefile  (requested)
+#   --diff             Print git diff output in addition to the function context
 #
 # TIP:
 #   Tune excerpt size with:
 #     export GITDIFFSHOW_CONTEXT=30
+#
+# Version 1.0.1 by Alan Rockefeller - January 27, 2026
+#
 # ======================================================================
 
 
@@ -115,7 +119,7 @@ if "Binary files " in patch:
     print("NOTE|Binary diff (no text hunks)")
     sys.exit(0)
 
-hunk_re = re.compile(r"^@@ -(\\d+)(?:,(\\d+))? \\+(\\d+)(?:,(\\d+))? @@", re.M)
+hunk_re = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", re.M)
 
 changed_lines: List[int] = []
 for m in hunk_re.finditer(patch):
@@ -289,6 +293,7 @@ PY
 
 gitdiffshow() {
   local print_wholefile=0
+  local show_diff=0
   local -a revspec=()
 
   local a
@@ -297,12 +302,15 @@ gitdiffshow() {
       --printwholefile|--wholefile|--whole-file|--all)
         print_wholefile=1
         ;;
+      --diff)
+        show_diff=1
+        ;;
       -h|--help)
         cat <<'EOF'
 gitdiffshow - Show context for files changed in git diff
 
 USAGE:
-  gitdiffshow [--all|--printwholefile] [git-diff-revspec...]
+  gitdiffshow [--all|--printwholefile] [--diff] [git-diff-revspec...]
 
 DEFAULT:
   - Python files: print only affected functions/methods (via print_function.sh)
@@ -311,6 +319,7 @@ DEFAULT:
 FLAGS:
   --all              Print entire file contents with line numbers (alias)
   --printwholefile   Same as --all
+  --diff             Print git diff output in addition to the function context
 
 EXAMPLES:
   gitdiffshow
@@ -367,6 +376,12 @@ EOF
     echo
     echo "===== $f ====="
     echo
+
+    if [[ "$show_diff" -eq 1 ]]; then
+      echo "--- Git Diff ---"
+      git diff --color=auto "${revspec[@]}" -- "$f"
+      echo
+    fi
 
     if [[ "$print_wholefile" -eq 1 ]]; then
       if command -v batcat >/dev/null 2>&1; then

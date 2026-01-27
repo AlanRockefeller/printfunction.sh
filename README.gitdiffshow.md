@@ -1,8 +1,8 @@
 # gitdiffshow
 
 **Author:** Alan Rockefeller  
-**Version:** 1.0  
-**Date:** January 26, 2026  
+**Version:** 1.0.1  
+**Date:** January 27, 2026  
 **License:** MIT  
 **Repository:** <https://github.com/AlanRockefeller/printfunction.sh>
 
@@ -35,7 +35,7 @@ chmod +x ~/.local/bin/gitdiffshow
 ## Usage
 
 ```bash
-gitdiffshow [--all|--printwholefile] [git-diff-revspec...]
+gitdiffshow [--all|--printwholefile] [--diff] [git-diff-revspec...]
 ```
 
 ### Examples
@@ -58,6 +58,9 @@ gitdiffshow --all
 
 # Show changes between specific commits
 gitdiffshow abc123..def456
+
+# Show changes with full git diff output (useful for AI code review context)
+gitdiffshow --diff HEAD
 ```
 
 ## Default Behavior
@@ -93,6 +96,7 @@ export GITDIFFSHOW_DEBUG=1
 
 - `--all` - Print entire file contents with line numbers
 - `--printwholefile` - Same as `--all` (alternative syntax)
+- `--diff` - Print git diff output in addition to the function context
 - `--wholefile` - Same as `--all` (alternative syntax)
 - `--whole-file` - Same as `--all` (alternative syntax)
 - `-h`, `--help` - Display help information
@@ -106,7 +110,7 @@ export GITDIFFSHOW_DEBUG=1
 ### Optional (for enhanced output)
 - `bat` or `batcat` - Syntax highlighting and line numbers (recommended)
 - `pygmentize` - Fallback syntax highlighting
-- `print_function.sh` - For optimal Python function display ([available here](https://github.com/AlanRockefeller/printfunction.sh))
+- `printfunction.sh` (or `print_function.sh`) - For optimal Python function display ([available here](https://github.com/AlanRockefeller/printfunction.sh))
 
 ### Fallback
 If no syntax highlighters are available, the tool falls back to plain numbered output using `nl`.
@@ -183,6 +187,6 @@ Contributions welcome! Please submit issues and pull requests to the [GitHub rep
 
 ## Related Tools
 
-- [`print_function.sh`](https://github.com/AlanRockefeller/printfunction.sh) - Extract and display individual Python functions (used internally by gitdiffshow)
+- [`printfunction.sh` (aka `print_function.sh`)](https://github.com/AlanRockefeller/printfunction.sh) - Extract and display individual Python functions (used internally by gitdiffshow)
 
 

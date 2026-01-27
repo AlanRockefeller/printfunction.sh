@@ -12,10 +12,14 @@
 # FLAGS:
 #   --printwholefile   Print the entire file with line numbers (old behavior)
 #   --all              Alias for --printwholefile  (requested)
+#   --diff             Print git diff output in addition to the function context
 #
 # TIP:
 #   Tune excerpt size with:
 #     set -x GITDIFFSHOW_CONTEXT 30
+#
+# Version 1.0.1 by Alan Rockefeller - January 27, 2026
+#
 # ======================================================================
 
 function __gitdiffshow_find_printfunc
@@ -91,7 +95,7 @@ if "Binary files " in patch:
     print("NOTE|Binary diff (no text hunks)")
     sys.exit(0)
 
-hunk_re = re.compile(r"^@@ -(\\d+)(?:,(\\d+))? \\+(\\d+)(?:,(\\d+))? @@", re.M)
+hunk_re = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", re.M)
 
 changed_lines: List[int] = []
 for m in hunk_re.finditer(patch):
@@ -268,17 +272,20 @@ end
 
 function gitdiffshow
     set -l print_wholefile 0
+    set -l show_diff 0
     set -l revspec
 
     for a in $argv
         switch $a
             case --printwholefile --wholefile --whole-file --all
                 set print_wholefile 1
+            case --diff
+                set show_diff 1
             case -h --help
                 echo "gitdiffshow - Show context for files changed in git diff"
                 echo ""
                 echo "USAGE:"
-                echo "  gitdiffshow [--all|--printwholefile] [git-diff-revspec...]"
+                echo "  gitdiffshow [--all|--printwholefile] [--diff] [git-diff-revspec...]"
                 echo ""
                 echo "DEFAULT:"
                 echo "  - Python files: print only affected functions/methods (via print_function.sh)"
@@ -287,6 +294,7 @@ function gitdiffshow
                 echo "FLAGS:"
                 echo "  --all              Print entire file contents with line numbers (alias)"
                 echo "  --printwholefile   Same as --all"
+                echo "  --diff             Print git diff output in addition to the function context"
                 echo ""
                 echo "EXAMPLES:"
                 echo "  gitdiffshow"
@@ -331,6 +339,12 @@ function gitdiffshow
         echo
         echo "===== $f ====="
         echo
+
+        if test $show_diff -eq 1
+            echo "--- Git Diff ---"
+            git diff --color=auto $revspec -- "$f"
+            echo
+        end
 
         if test $print_wholefile -eq 1
             if type -q bat
