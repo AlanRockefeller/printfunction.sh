@@ -2,6 +2,15 @@
 # ======================================================================
 # gitdiffshow - Show context for files changed in git diff
 # ======================================================================
+
+# ----------------------------------------------------------------------
+# Force NO PAGERS anywhere (important for copy/paste into AI).
+# Git and bat commonly page with `less` depending on user config.
+# ----------------------------------------------------------------------
+# We pass these to child processes via 'env' to avoid polluting the shell
+# if this script is sourced.
+GITDIFFSHOW_NO_PAGER_ENV=(PAGER=cat GIT_PAGER=cat BAT_PAGER=cat BAT_PAGING=never LESS=FRX)
+
 #
 # DEFAULT BEHAVIOR:
 #   - For Python files (*.py): print ONLY the functions/methods that contain
@@ -13,6 +22,8 @@
 #   --printwholefile   Print the entire file with line numbers (old behavior)
 #   --all              Alias for --printwholefile  (requested)
 #   --diff             Print git diff output in addition to the function context
+#   --color            Force ANSI color output
+#   --no-color         Disable ANSI color (best for pasting into AI)
 #
 # TIP:
 #   Tune excerpt size with:
@@ -21,12 +32,6 @@
 # Version 1.0.1 by Alan Rockefeller - January 27, 2026
 #
 # ======================================================================
-
-
-export CLICOLOR_FORCE=1
-export BAT_FORCE_COLOR=1
-export PF_FORCE_COLOR=1
-export PYGMENTIZE_STYLE=monokai
 
 
 set -euo pipefail
@@ -51,19 +56,22 @@ __gitdiffshow_print_excerpt() {
 
   [[ -z "$start_line" || -z "$end_line" ]] && return 0
 
+  local color_mode="${GITDIFFSHOW_COLOR_MODE:-auto}"
+  local bat_color="$color_mode"
+
   echo "--- $label (lines $start_line-$end_line) ---"
 
   # Best: bat/batcat can show real file line numbers and syntax highlight directly.
   if command -v batcat >/dev/null 2>&1; then
-    batcat --color=always --paging=never --style=numbers --line-range "${start_line}:${end_line}" "$file"
+    env "${GITDIFFSHOW_NO_PAGER_ENV[@]}" batcat --color="$bat_color" --paging=never --style=numbers --line-range "${start_line}:${end_line}" "$file"
     return 0
   elif command -v bat >/dev/null 2>&1; then
-    bat --color=always --paging=never --style=numbers --line-range "${start_line}:${end_line}" "$file"
+    env "${GITDIFFSHOW_NO_PAGER_ENV[@]}" bat --color="$bat_color" --paging=never --style=numbers --line-range "${start_line}:${end_line}" "$file"
     return 0
   fi
 
   # Fallback: pygmentize (we slice the file then set linenostart so numbers match)
-  if command -v pygmentize >/dev/null 2>&1; then
+  if [[ "$color_mode" != "never" ]] && command -v pygmentize >/dev/null 2>&1; then
     if sed -n "${start_line},${end_line}p" "$file" | pygmentize -g -f terminal256 -O "style=monokai,linenos=1,linenostart=${start_line}" 2>/dev/null; then
       return 0
     fi
@@ -294,6 +302,7 @@ PY
 gitdiffshow() {
   local print_wholefile=0
   local show_diff=0
+  local color_mode="auto"
   local -a revspec=()
 
   local a
@@ -305,12 +314,25 @@ gitdiffshow() {
       --diff)
         show_diff=1
         ;;
+      --color)
+        color_mode="always"
+        ;;
+      --color=*)
+        color_mode="${a#*=}"
+        if [[ ! "$color_mode" =~ ^(always|never|auto)$ ]]; then
+           echo "Error: Invalid color mode '$color_mode'. Use always, never, or auto." >&2
+           exit 1
+        fi
+        ;;
+      --no-color|--nocolor|-n)
+        color_mode="never"
+        ;;
       -h|--help)
         cat <<'EOF'
 gitdiffshow - Show context for files changed in git diff
 
 USAGE:
-  gitdiffshow [--all|--printwholefile] [--diff] [git-diff-revspec...]
+  gitdiffshow [--all|--printwholefile] [--diff] [--color[=MODE]|--no-color] [git-diff-revspec...]
 
 DEFAULT:
   - Python files: print only affected functions/methods (via print_function.sh)
@@ -320,6 +342,8 @@ FLAGS:
   --all              Print entire file contents with line numbers (alias)
   --printwholefile   Same as --all
   --diff             Print git diff output in addition to the function context
+  --color[=MODE]     Color mode: always, auto, never (default: auto). Bare --color implies always.
+  --no-color, -n     Disable ANSI color (best for pasting into AI)
 
 EXAMPLES:
   gitdiffshow
@@ -327,6 +351,7 @@ EXAMPLES:
   gitdiffshow HEAD
   gitdiffshow main..
   gitdiffshow --all
+  gitdiffshow --diff --no-color
 
 TIP: Tune excerpt size:
   export GITDIFFSHOW_CONTEXT=30
@@ -358,6 +383,9 @@ EOF
     printfun=""
   fi
 
+  # Used by excerpt printer + print_function
+  export GITDIFFSHOW_COLOR_MODE="$color_mode"
+
   echo "Showing ${#filenames[@]} changed file(s):"
   local f
   for f in "${filenames[@]}"; do
@@ -379,16 +407,21 @@ EOF
 
     if [[ "$show_diff" -eq 1 ]]; then
       echo "--- Git Diff ---"
-      git diff --color=auto "${revspec[@]}" -- "$f"
+      # Prevent git from invoking a pager (less) for long diffs
+      if [[ "$color_mode" == "never" ]]; then
+        env "${GITDIFFSHOW_NO_PAGER_ENV[@]}" git --no-pager diff --no-color "${revspec[@]}" -- "$f"
+      else
+        env "${GITDIFFSHOW_NO_PAGER_ENV[@]}" git --no-pager diff --color="$color_mode" "${revspec[@]}" -- "$f"
+      fi
       echo
     fi
 
     if [[ "$print_wholefile" -eq 1 ]]; then
       if command -v batcat >/dev/null 2>&1; then
-        batcat --color=always --paging=never --style=numbers "$f"
+        env "${GITDIFFSHOW_NO_PAGER_ENV[@]}" batcat --color="$color_mode" --paging=never --style=numbers "$f"
       elif command -v bat >/dev/null 2>&1; then
-        bat --color=always --paging=never --style=numbers "$f"
-      elif command -v pygmentize >/dev/null 2>&1; then
+        env "${GITDIFFSHOW_NO_PAGER_ENV[@]}" bat --color="$color_mode" --paging=never --style=numbers "$f"
+      elif [[ "$color_mode" != "never" ]] && command -v pygmentize >/dev/null 2>&1; then
         pygmentize -g -f terminal256 -O "style=monokai,linenos=1" "$f" 2>/dev/null || \
         pygmentize -g -f terminal256 -O "linenos=1" "$f"
       else
@@ -431,7 +464,13 @@ EOF
       for rec in "${funcs[@]}"; do
         IFS='|' read -r qn s e <<<"$rec"
         echo "--- function $qn (lines $s-$e) ---"
-        PF_FORCE_COLOR=1 BAT_FORCE_COLOR=1 CLICOLOR_FORCE=1 TERM=${TERM:-xterm-256color} "$printfun" --all "$f" "$qn"
+        # Also prevent any pager that print_function.sh / bat might try to use
+        if [[ "$color_mode" == "never" ]]; then
+           # Try hard to discourage color in child tools
+           env "${GITDIFFSHOW_NO_PAGER_ENV[@]}" env -u CLICOLOR_FORCE -u BAT_FORCE_COLOR -u PF_FORCE_COLOR NO_COLOR=1 TERM=dumb "$printfun" --all "$f" "$qn"
+        else
+           env "${GITDIFFSHOW_NO_PAGER_ENV[@]}" PF_FORCE_COLOR=1 BAT_FORCE_COLOR=1 CLICOLOR_FORCE=1 TERM=${TERM:-xterm-256color} "$printfun" --all "$f" "$qn"
+        fi
         echo
       done
 

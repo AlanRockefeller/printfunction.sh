@@ -35,7 +35,7 @@ chmod +x ~/.local/bin/gitdiffshow
 ## Usage
 
 ```bash
-gitdiffshow [--all|--printwholefile] [--diff] [git-diff-revspec...]
+gitdiffshow [--all|--printwholefile] [--diff] [--color[=MODE]|--no-color] [git-diff-revspec...]
 ```
 
 ### Examples
@@ -99,6 +99,8 @@ export GITDIFFSHOW_DEBUG=1
 - `--diff` - Print git diff output in addition to the function context
 - `--wholefile` - Same as `--all` (alternative syntax)
 - `--whole-file` - Same as `--all` (alternative syntax)
+- `--color[=MODE]` - Force ANSI color output. `MODE` can be `always`, `never`, or `auto` (default: `auto`). Bare `--color` implies `always`.
+- `--no-color`, `-n` - Disable ANSI color (best for pasting into AI)
 - `-h`, `--help` - Display help information
 
 ## Dependencies
