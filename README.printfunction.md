@@ -1,6 +1,6 @@
 # printfunction.sh
-# Version 1.3.1
-# By Alan Rockefeller — January 26, 2026  
+# Version 1.3.3
+# By Alan Rockefeller — January 27, 2026  
 
 **Extract Python functions with surgical precision using AST parsing.**
 
@@ -8,6 +8,7 @@ A command-line tool that uses Python’s abstract syntax tree to extract functio
 
 As of **v1.2+**, it supports multi-file searching, directory recursion, globs, regex targeting, and line-range extraction.
 **v1.3.1** adds `--at PATTERN` to find enclosing blocks by content match.
+**v1.3.2** defaults to listing available functions if no query/mode is provided.
 
 ---
 
@@ -19,11 +20,15 @@ curl -o printfunction https://raw.githubusercontent.com/AlanRockefeller/printfun
 chmod +x printfunction
 mv printfunction ~/.local/bin/  # or /usr/local/bin with sudo
 
+# List all functions (default when no query provided)
+printfunction myfile.py
+
 # Extract a function from one file
 printfunction foo myfile.py
 
 # Find the function containing a specific string
 printfunction --at "cached_preview" myfile.py
+
 
 # Search across multiple files
 printfunction foo a.py b.py
@@ -74,6 +79,7 @@ v1.3.1 expands `printfunction` from “single-file function extractor” into a 
 - **Line range extraction** (`lines START-END`) and **smart block extraction** (`~START-END`)
 - **Context lines** for line-mode matches (`--context N`)
 - **File type filter** (`--type py` default, or `--type all`)
+- **Default list mode** (v1.3.2+) – Providing only files/roots lists available definitions
 
 ---
 
@@ -361,11 +367,13 @@ printfunction foo . # Correct
 
 ### “Missing FUNCTION_NAME”
 
-If you aren’t using `--regex`, `--at`, `--list`, or line-mode, you need a query:
+If you aren’t using `--regex`, `--at`, `--list`, or line-mode, and provide arguments that look like files but no query, the tool now defaults to **listing** functions (v1.3.2+). 
+
+However, if you explicitly turn off list mode or provide conflicting flags without a query, you might see this error.
 
 ```bash
-printfunction .     # Error
-printfunction --list .  # Correct
+# v1.3.2+ defaults to list mode, so this is now VALID:
+printfunction .
 ```
 
 ### Parse errors

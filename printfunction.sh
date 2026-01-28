@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# printfunction.sh version 1.3.1
-# Alan Rockefeller - January 26, 2026
+# printfunction.sh version 1.3.3
+# Alan Rockefeller - January 27, 2026
 
 set -euo pipefail
 
@@ -42,6 +42,7 @@ Options:
 
   --list                List available functions/methods (use with --all to include nested).
                         If QUERY is provided, filters list by name/qualname.
+                        If you provide only files/roots, printfunction lists available definitions (same as --list).
 
   --regex PATTERN       Match by regex against fully-qualified names
 
@@ -221,6 +222,11 @@ for ((i=0; i<${#POSITIONAL_ARGS[@]}; i++)); do
         fi
     fi
 done
+
+# Auto-enable list mode if roots provided but no query/mode
+if [ ${#SEARCH_ROOTS[@]} -gt 0 ] && [ -z "$QUERY" ] && [ -z "$REGEX_PATTERN" ] && [ -z "$AT_PATTERN" ] && [ "$LINE_MODE" != "true" ]; then
+    LIST_MODE="true"
+fi
 
 # Validation
 if [ "$LIST_MODE" != "true" ] && [ -z "$REGEX_PATTERN" ] && [ -z "$AT_PATTERN" ] && [ -z "$QUERY" ] && [ "$LINE_MODE" != "true" ]; then
@@ -755,23 +761,40 @@ PY
 
 # --- Output Handling ---
 run_with_optional_highlighting() {
-    if [ -t 1 ] || [ "${PF_FORCE_COLOR:-0}" = "1" ]; then
+    # Decide color policy
+    # PF_COLOR_MODE: always|auto|never (optional)
+    local pf_mode="${PF_COLOR_MODE:-auto}"
+
+    local want_color=0
+    if [ "$pf_mode" = "never" ] || [ -n "${NO_COLOR:-}" ] || [ "${CLICOLOR:-1}" = "0" ] || [ "${TERM:-}" = "dumb" ]; then
+        want_color=0
+    elif [ "$pf_mode" = "always" ] || [ "${PF_FORCE_COLOR:-0}" = "1" ]; then
+        want_color=1
+    elif [ -t 1 ]; then
+        want_color=1
+    else
+        want_color=0
+    fi
+
+    if [ "$want_color" -eq 1 ]; then
         local -a highlighter=(cat)
+        
+        # We are forcing color for the highlighter because we already decided want_color=1
         if command -v bat >/dev/null 2>&1; then
-             # Default to plain for multi-file mixed content
              highlighter=(bat --color=always --style=plain --paging=never)
              
-             # Heuristic: if filtering for PY only and NOT line mode, try python highlighting
-             if [ "$TYPE_FILTER" = "py" ] && [ "$LINE_MODE" != "true" ]; then
+             # If we're only dealing with Python, always force Python highlighting (even in line mode)
+             if [ "$TYPE_FILTER" = "py" ]; then
                  highlighter=(bat --color=always --language=python --style=plain --paging=never)
              fi
         elif command -v batcat >/dev/null 2>&1; then
              highlighter=(batcat --color=always --style=plain --paging=never)
-             if [ "$TYPE_FILTER" = "py" ] && [ "$LINE_MODE" != "true" ]; then
+             
+             if [ "$TYPE_FILTER" = "py" ]; then
                  highlighter=(batcat --color=always --language=python --style=plain --paging=never)
              fi
         elif command -v pygmentize >/dev/null 2>&1; then
-             if [ "$TYPE_FILTER" = "py" ] && [ "$LINE_MODE" != "true" ]; then
+             if [ "$TYPE_FILTER" = "py" ]; then
                  highlighter=(pygmentize -l python -f terminal256)
              else
                  highlighter=(pygmentize -g -f terminal256)
@@ -792,4 +815,22 @@ run_with_optional_highlighting() {
 
 run_with_optional_highlighting
 exit $?
+
+# --- Regression Tests / Examples ---
+# 1. Default list mode
+# ./printfunction.sh routes.py
+# Expected: Lists functions in routes.py (e.g. hello, world)
+
+# 2. Explicit query overrides default list mode
+# ./printfunction.sh hello routes.py
+# Expected: Prints source code of hello function
+
+# 3. Regex mode still works
+# ./printfunction.sh --regex 'hel.*' routes.py
+# Expected: Prints source code of hello function
+
+# 4. Explicit line mode
+# ./printfunction.sh lines 10-20 routes.py
+# Expected: Prints lines 10-20
+
 

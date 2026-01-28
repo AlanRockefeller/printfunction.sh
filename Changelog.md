@@ -1,5 +1,23 @@
 # Changelog
 
+## printfunction.sh [1.3.3] - 2026-01-27
+
+### Changed
+- **More consistent highlighting:** When syntax highlighting is enabled and --type py is in effect, Python highlighting is now forced even in line-mode output for more uniform results.
+- **Color control:** Added PF_COLOR_MODE=always|auto|never and improved NO_COLOR/TTY handling so wrappers (e.g., gitdiffshow -n) can reliably force monochrome output.
+
+## gitdiffshow [1.0.2] - 2026-01-27
+
+- **Consistent color behavior:** --no-color/-n now forces monochrome output for both git diff and extracted function/snippet context by propagating PF_COLOR_MODE=never to printfunction.sh.
+- **Color mode passthrough:** When color is enabled (--color[=auto|always|never]), the chosen mode is forwarded to printfunction.sh so diff output and function context follow the same policy.
+
+## printfunction.sh [1.3.2] - 2026-01-27
+
+### Changed
+- **Default List Mode:**
+  - When you provide only files/roots (no query/--regex/--at/line mode), the tool now defaults to listing available definitions (equivalent to --list) instead of erroring with “Missing FUNCTION_NAME”.
+  - This removes the "Missing FUNCTION_NAME" error for commands like `printfunction .` or `printfunction myfile.py` and makes exploring a new codebase faster.
+
 ## gitdiffshow [1.0.1] - 2026-01-27
 
 ### Added to gitdiffshow
