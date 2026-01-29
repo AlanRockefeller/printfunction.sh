@@ -29,7 +29,7 @@ GITDIFFSHOW_NO_PAGER_ENV=(PAGER=cat GIT_PAGER=cat BAT_PAGER=cat BAT_PAGING=never
 #   Tune excerpt size with:
 #     export GITDIFFSHOW_CONTEXT=30
 #
-# Version 1.0.1 by Alan Rockefeller - January 27, 2026
+# Version 1.0.2 by Alan Rockefeller - January 27, 2026
 #
 # ======================================================================
 
@@ -467,9 +467,9 @@ EOF
         # Also prevent any pager that print_function.sh / bat might try to use
         if [[ "$color_mode" == "never" ]]; then
            # Try hard to discourage color in child tools
-           env "${GITDIFFSHOW_NO_PAGER_ENV[@]}" env -u CLICOLOR_FORCE -u BAT_FORCE_COLOR -u PF_FORCE_COLOR NO_COLOR=1 TERM=dumb "$printfun" --all "$f" "$qn"
+           env "${GITDIFFSHOW_NO_PAGER_ENV[@]}" env -u CLICOLOR_FORCE -u BAT_FORCE_COLOR -u PF_FORCE_COLOR NO_COLOR=1 TERM=dumb PF_COLOR_MODE=never "$printfun" --all "$f" "$qn"
         else
-           env "${GITDIFFSHOW_NO_PAGER_ENV[@]}" PF_FORCE_COLOR=1 BAT_FORCE_COLOR=1 CLICOLOR_FORCE=1 TERM=${TERM:-xterm-256color} "$printfun" --all "$f" "$qn"
+           env "${GITDIFFSHOW_NO_PAGER_ENV[@]}" PF_COLOR_MODE="$color_mode" PF_FORCE_COLOR=1 BAT_FORCE_COLOR=1 CLICOLOR_FORCE=1 TERM=${TERM:-xterm-256color} "$printfun" --all "$f" "$qn"
         fi
         echo
       done

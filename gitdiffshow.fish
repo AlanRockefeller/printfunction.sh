@@ -30,7 +30,7 @@ set -l __GITDIFFSHOW_NO_PAGER_ENV \
 #   Tune excerpt size with:
 #     set -x GITDIFFSHOW_CONTEXT 30
 #
-# Version 1.0.1 by Alan Rockefeller - January 27, 2026
+# Version 1.0.2 by Alan Rockefeller - January 27, 2026
 #
 # ======================================================================
 
@@ -442,9 +442,9 @@ function gitdiffshow
                 # Also prevent any pager that print_function.sh / bat might try to use
                 if test "$color_mode" = "never"
                     # Try hard to discourage color in child tools
-                    env $__GITDIFFSHOW_NO_PAGER_ENV NO_COLOR=1 TERM=dumb $printfun --all "$f" "$qn"
+                    env $__GITDIFFSHOW_NO_PAGER_ENV NO_COLOR=1 TERM=dumb PF_COLOR_MODE=never $printfun --all "$f" "$qn"
                 else
-                    env $__GITDIFFSHOW_NO_PAGER_ENV PF_FORCE_COLOR=1 BAT_FORCE_COLOR=1 CLICOLOR_FORCE=1 $printfun --all "$f" "$qn"
+                    env $__GITDIFFSHOW_NO_PAGER_ENV PF_COLOR_MODE=$color_mode PF_FORCE_COLOR=1 BAT_FORCE_COLOR=1 CLICOLOR_FORCE=1 $printfun --all "$f" "$qn"
                 end
                 echo
             end

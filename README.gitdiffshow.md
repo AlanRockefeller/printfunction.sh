@@ -1,7 +1,7 @@
 # gitdiffshow
 
 **Author:** Alan Rockefeller  
-**Version:** 1.0.1  
+**Version:** 1.0.2  
 **Date:** January 27, 2026  
 **License:** MIT  
 **Repository:** <https://github.com/AlanRockefeller/printfunction.sh>
