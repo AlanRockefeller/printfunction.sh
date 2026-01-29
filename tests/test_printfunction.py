@@ -77,9 +77,9 @@ def test_ignore_dirs(script_path, fixtures_dir):
     res = run_script(script_path, ["ignored_func", "."], cwd=cwd)
     assert res.returncode == 1
     
-    # explicit file in ignored dir should work?
+    # NEW behavior: explicit file in ignored dir should be ignored
     res = run_script(script_path, ["ignored_func", ".venv/lib.py"], cwd=cwd)
-    assert res.returncode == 0
+    assert res.returncode == 1
 
 def test_fast_path_skips_syntax_error(script_path, fixtures_dir):
     # Search for "hello" in bad/syntax_error.py
