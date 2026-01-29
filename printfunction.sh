@@ -5,6 +5,11 @@
 
 set -euo pipefail
 
+# Prevent env leakage from wrappers / prior runs
+unset PF_MISSING_ROOTS
+unset PF_MATCHES_FILE
+unset PF_RG_USED
+
 # --- Help Section ---
 if [ $# -eq 0 ] || [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
     cat <<'HELP'
@@ -63,6 +68,9 @@ Examples:
   # Search using globs (quoted to prevent shell expansion, or unquoted)
   ./printfunction.sh foo "**/*.py"
 
+  # Bracket globs
+  ./printfunction.sh foo "x/[ab].py"
+
   # Line extraction (header per file)
   ./printfunction.sh lines 10-20 file1.py file2.py
 
@@ -95,11 +103,11 @@ while [ $# -gt 0 ]; do
         --all) INCLUDE_NESTED="true"; shift ;;
         --first) FIRST_ONLY="true"; shift ;;
         --list) LIST_MODE="true"; shift ;;
-        --regex) 
+        --regex)
             shift
             if [ $# -eq 0 ]; then echo "Error: --regex requires a PATTERN" >&2; exit 2; fi
             REGEX_PATTERN="$1"; shift ;;
-        --at) 
+        --at)
             shift
             if [ $# -eq 0 ]; then echo "Error: --at requires a PATTERN" >&2; exit 2; fi
             AT_PATTERN="$1"; shift ;;
@@ -107,7 +115,7 @@ while [ $# -gt 0 ]; do
         --import=all|--imports=all) IMPORT_MODE="all"; shift ;;
         --import=used|--imports=used) IMPORT_MODE="used"; shift ;;
         --import=none|--imports=none) IMPORT_MODE="none"; shift ;;
-        --type) 
+        --type)
             shift
             if [ $# -eq 0 ]; then echo "Error: --type requires an argument" >&2; exit 2; fi
             TYPE_FILTER="$1"; shift ;;
@@ -213,8 +221,8 @@ for ((i=0; i<${#POSITIONAL_ARGS[@]}; i++)); do
         if [ -n "$REGEX_PATTERN" ] || [ -n "$AT_PATTERN" ]; then
             SEARCH_ROOTS+=("$arg")
         else
-            # Check if it looks like a glob though?
-            if [[ "$arg" == *"*"* || "$arg" == *"?"* ]]; then
+            # If it looks like a glob, treat as root (include bracket globs too)
+            if [[ "$arg" == *"*"* || "$arg" == *"?"* || "$arg" == *"["* ]]; then
                 SEARCH_ROOTS+=("$arg")
             else
                 QUERY="$arg"
@@ -273,7 +281,127 @@ export PF_LINE_SPEC="$LINE_SPEC"
 export PF_TYPE_FILTER="$TYPE_FILTER"
 export PF_CONTEXT_LINES="$CONTEXT_LINES"
 
+# --- RG Optimization ---
+PF_MATCHES_FILE=""
+
+cleanup() {
+    if [ -n "${PF_MATCHES_FILE:-}" ] && [ -f "$PF_MATCHES_FILE" ]; then
+        rm -f "$PF_MATCHES_FILE"
+    fi
+}
+trap cleanup EXIT INT TERM
+
+run_rg_prefilter() {
+   # Gate on type filter
+   if [ "$PF_TYPE_FILTER" != "py" ]; then return 1; fi
+
+   local -a rg_paths=()
+   local -a rg_globs=()
+   local has_glob="false"
+
+   # Identify roots and globs
+   for root in "${SEARCH_ROOTS[@]}"; do
+       if [[ "$root" == *"*"* ]] || [[ "$root" == *"?"* ]] || [[ "$root" == *"["* ]]; then
+           has_glob="true"
+
+           # Skip rg prefilter for absolute globs; let Python handle it.
+           if [[ "$root" == /* ]]; then
+               return 1
+           fi
+
+           rg_globs+=("-g" "$root")
+       else
+           if [ -e "$root" ]; then
+               rg_paths+=("$root")
+           fi
+       fi
+   done
+
+   # Default to current dir if only globs provided (and extraction failed somehow) or no roots
+   if [ "$has_glob" = "true" ] && [ ${#rg_paths[@]} -eq 0 ]; then
+       rg_paths+=(".")
+   fi
+
+   # If nothing to search, return (Python will handle full fallback/warnings)
+   if [ ${#rg_paths[@]} -eq 0 ] && [ ${#rg_globs[@]} -eq 0 ]; then
+       return 1
+   fi
+
+   local search_name="$PF_TARGET"
+   if [[ "$search_name" == *"."* ]]; then
+       search_name="${search_name##*.}"
+   fi
+
+   # Escape special regex chars
+   local safe_name
+   safe_name=$(printf '%s' "$search_name" | sed 's/[][\\.|$(){}?+*^]/\\&/g')
+
+   local ignores=(".git" ".venv" "venv" "verify_venv" "__pycache__" "build" "dist" ".mypy_cache" ".ruff_cache" "node_modules" ".idea" ".vscode" "site-packages" "dist-packages")
+   local -a rg_args=()
+   for ign in "${ignores[@]}"; do
+       rg_args+=("-g" "!**/$ign/**")
+   done
+
+   # Prevent broadening search
+   # If user provided NO globs, add default py globs to restrict search.
+   if [ "$has_glob" = "false" ]; then
+       rg_args+=("-g" "**/*.py" "-g" "**/*.pyw")
+   fi
+
+   rg_args+=("${rg_globs[@]}")
+
+   local tmp_matches
+   tmp_matches=$(mktemp)
+   local tmp_err
+   tmp_err=$(mktemp)
+
+   set +e
+   rg --json --no-heading --color never "${rg_args[@]}" \
+      -e "^[[:space:]]*(async[[:space:]]+def|def)[[:space:]]+${safe_name}\b" \
+      "${rg_paths[@]}" > "$tmp_matches" 2> "$tmp_err"
+   local rg_exit=$?
+   set -e
+
+   if [ $rg_exit -eq 0 ]; then
+       export PF_MATCHES_FILE="$tmp_matches"
+       export PF_RG_USED="1"
+       rm "$tmp_err"
+       return 0
+   elif [ $rg_exit -eq 1 ]; then
+       rm "$tmp_matches"
+       rm "$tmp_err"
+       # Fast exit on no-match is opt-in (PF_FAST_NO_MATCH=1)
+       if [ "${PF_FAST_NO_MATCH:-0}" = "1" ]; then
+           if [ -t 2 ]; then
+               echo "Tip: run with --list to see available definitions." >&2
+           fi
+           exit 1
+       fi
+       return 1
+   else
+       rm "$tmp_matches"
+       local err_msg
+       err_msg=$(head -n 1 "$tmp_err")
+       rm "$tmp_err"
+       echo "Warning: rg failed (exit $rg_exit): $err_msg; falling back to full scan." >&2
+       return 1
+   fi
+}
+
+# Run optimization if eligible
+if command -v rg >/dev/null 2>&1 && \
+   [ -n "$PF_TARGET" ] && \
+   [ -z "$PF_REGEX_PATTERN" ] && \
+   [ -z "$PF_AT_PATTERN" ] && \
+   [ "$PF_LIST_MODE" = "false" ] && \
+   [ "$PF_LINE_MODE" = "false" ] && \
+   [ -z "${PF_DISABLE_RG:-}" ]; then
+
+   run_rg_prefilter || true
+fi
+
 extract_code() {
+    set +e
     python3 - "${SEARCH_ROOTS[@]}" <<'PY'
 import ast
 import sys
@@ -281,8 +409,17 @@ import os
 import glob
 import re
 import tokenize
+import signal
+import json
+import bisect
 from dataclasses import dataclass
 from typing import List, Set, Tuple
+
+# Handle SIGPIPE
+try:
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+except Exception:
+    pass
 
 # --- Configuration ---
 target = os.environ["PF_TARGET"]
@@ -295,6 +432,7 @@ first_only = os.environ["PF_FIRST_ONLY"] == "true"
 line_mode = os.environ["PF_LINE_MODE"] == "true"
 line_spec = os.environ["PF_LINE_SPEC"]
 type_filter = os.environ["PF_TYPE_FILTER"]
+matches_file = os.environ.get("PF_MATCHES_FILE")
 try:
     context_lines = int(os.environ["PF_CONTEXT_LINES"])
 except ValueError:
@@ -307,32 +445,62 @@ if type_filter not in ("py", "all"):
 roots = sys.argv[1:]
 
 DEFAULT_IGNORE_DIRS = {
-    '.git', '.venv', 'venv', '__pycache__', 'build', 'dist',
-    '.mypy_cache', '.ruff_cache', 'node_modules', '.idea', '.vscode'
+    '.git', '.venv', 'venv', 'verify_venv', '__pycache__', 'build', 'dist',
+    '.mypy_cache', '.ruff_cache', 'node_modules', '.idea', '.vscode',
+    'site-packages', 'dist-packages'
 }
 
 # --- Helpers ---
+def _path_components(p: str) -> List[str]:
+    # Normalize and split into components, ignoring leading '.' and empty segments.
+    p = os.path.normpath(p)
+    parts: List[str] = []
+    while True:
+        head, tail = os.path.split(p)
+        if tail:
+            parts.append(tail)
+            p = head
+        else:
+            if head and head not in (os.sep, ".", ""):
+                parts.append(head)
+            break
+    parts.reverse()
+    return [x for x in parts if x not in ("", ".")]
+
+def should_ignore_path(p: str) -> bool:
+    # Ignore any path that contains one of DEFAULT_IGNORE_DIRS anywhere in its components.
+    parts = _path_components(p)
+    return any(part in DEFAULT_IGNORE_DIRS for part in parts)
+
 def is_py_file(p: str) -> bool:
     return p.endswith(".py") or p.endswith(".pyw")
 
 def parse_line_spec(spec: str) -> Tuple[bool, int, int]:
     spec = spec.strip()
     smart = spec.startswith("~")
-    if smart: spec = spec[1:].strip()
+    if smart:
+        spec = spec[1:].strip()
     spec = spec.replace("–", "-")
     m = re.fullmatch(r"(\d+)-(\d+)", spec)
-    if not m: raise ValueError(f"Invalid range: {spec}")
+    if not m:
+        raise ValueError(f"Invalid range: {spec}")
     a, b = int(m.group(1)), int(m.group(2))
-    if a <= 0 or b <= 0: raise ValueError("Line numbers must be >= 1")
-    return smart, min(a,b), max(a,b)
+    if a <= 0 or b <= 0:
+        raise ValueError("Line numbers must be >= 1")
+    return smart, min(a, b), max(a, b)
 
 def expand_roots(roots):
     paths = []
     missing = []
     for r in roots:
         if os.path.isfile(r):
+            # Respect ignore dirs even for explicit files (important for glob-expanded inputs).
+            if should_ignore_path(r):
+                continue
             paths.append(r)
         elif os.path.isdir(r):
+            if should_ignore_path(r):
+                continue
             for root, dirs, files in os.walk(r):
                 dirs[:] = [d for d in dirs if d not in DEFAULT_IGNORE_DIRS]
                 for f in files:
@@ -340,32 +508,89 @@ def expand_roots(roots):
                     if type_filter == 'py' and not is_py_file(full_path):
                         continue
                     paths.append(full_path)
-        elif '*' in r or '?' in r:
-            # Glob expansion
-            expanded = glob.glob(r, recursive=True)
-            if not expanded:
-                missing.append(f"glob matched no files: {r}")
-                continue
-            for g in expanded:
-                if os.path.isfile(g):
-                    if type_filter == 'py' and not is_py_file(g):
+        elif '*' in r or '?' in r or '[' in r:
+            # OPTIMIZATION: Check for common recursive globs like "DIR/**/*.py"
+            # If we see that, we can just walk the directory, which is faster/safer
+            # regarding ignore limits than letting glob.glob expansion happen.
+            # We look for suffix: /**/*.py or /**/*.pyw (or on windows \**\*.py etc)
+            
+            # Normalize to forward slashes for easier checking
+            r_norm = r.replace(os.sep, '/')
+            is_recursive_all = False
+            base_walk_dir = None
+            
+            if r_norm.endswith("/**/*.py"):
+                base_walk_dir = r[:-8] # strip /**/*.py (8 chars)
+                is_recursive_all = True
+            elif r_norm.endswith("/**/*.pyw"):
+                base_walk_dir = r[:-9]
+                is_recursive_all = True
+            # Handle the case where the glob IS just "**/*.py" (base is curdir)
+            elif r_norm == "**/*.py":
+                base_walk_dir = "."
+                is_recursive_all = True
+            elif r_norm == "**/*.pyw":
+                base_walk_dir = "."
+                is_recursive_all = True
+                
+            if is_recursive_all and base_walk_dir:
+                if not os.path.exists(base_walk_dir):
+                     missing.append(f"glob base dir not found: {base_walk_dir}")
+                     continue
+                
+                # Manual walk
+                for root, dirs, files in os.walk(base_walk_dir):
+                    if should_ignore_path(root):
+                         # If the root itself is ignored, prune dirs and continue
+                         # But os.walk yields root first. We can modify dirs in-place to stop descent
+                         dirs[:] = []
+                         continue
+
+                    dirs[:] = [d for d in dirs if d not in DEFAULT_IGNORE_DIRS]
+                    
+                    for f in files:
+                        full_path = os.path.join(root, f)
+                        if should_ignore_path(full_path):
+                            continue
+                        if type_filter == 'py' and not is_py_file(full_path):
+                            continue
+                        paths.append(full_path)
+            else:
+                # Stream glob results (avoid huge in-memory expansions) and apply ignore filtering.
+                it = glob.iglob(r, recursive=True)
+                any_hit = False
+                for g in it:
+                    any_hit = True
+
+                    # Skip anything under ignored directories.
+                    if should_ignore_path(g):
                         continue
-                    paths.append(g)
-                elif os.path.isdir(g):
-                     for root, dirs, files in os.walk(g):
-                        dirs[:] = [d for d in dirs if d not in DEFAULT_IGNORE_DIRS]
-                        for f in files:
-                            full_path = os.path.join(root, f)
-                            if type_filter == 'py' and not is_py_file(full_path):
-                                continue
-                            paths.append(full_path)
+
+                    if os.path.isfile(g):
+                        if type_filter == 'py' and not is_py_file(g):
+                            continue
+                        paths.append(g)
+                    elif os.path.isdir(g):
+                        for root, dirs, files in os.walk(g):
+                            dirs[:] = [d for d in dirs if d not in DEFAULT_IGNORE_DIRS]
+                            for f in files:
+                                full_path = os.path.join(root, f)
+                                if type_filter == 'py' and not is_py_file(full_path):
+                                    continue
+                                paths.append(full_path)
+
+                if not any_hit:
+                    missing.append(f"glob matched no files: {r}")
+                    continue
         else:
             missing.append(r)
-    
+
     # Dedup and preserve discovery order
     seen = set()
     deduped = []
     for p in paths:
+        if p.startswith("./") and len(p) > 2:
+            p = p[2:]
         abs_p = os.path.abspath(p)
         if abs_p not in seen:
             seen.add(abs_p)
@@ -401,45 +626,64 @@ class Extractor(ast.NodeVisitor):
         if self.import_mode != "none" and self.function_depth == 0:
             self.imports.append(FoundImport(node=node))
         self.generic_visit(node)
+
     def visit_ImportFrom(self, node):
         if self.import_mode != "none" and self.function_depth == 0:
             self.imports.append(FoundImport(node=node))
         self.generic_visit(node)
+
     def visit_ClassDef(self, node):
         self.class_stack.append(node.name)
-        try: self.generic_visit(node)
-        finally: self.class_stack.pop()
+        try:
+            self.generic_visit(node)
+        finally:
+            self.class_stack.pop()
+
     def visit_FunctionDef(self, node):
         self.defs.append(FoundDef(self._qualname_for(node.name), node.name, getattr(node, "lineno", 0), node))
         if self.include_nested:
             self.func_stack.append(node.name)
             self.function_depth += 1
-            try: self.generic_visit(node)
-            finally: self.function_depth -= 1; self.func_stack.pop()
+            try:
+                self.generic_visit(node)
+            finally:
+                self.function_depth -= 1
+                self.func_stack.pop()
+
     def visit_AsyncFunctionDef(self, node):
         self.defs.append(FoundDef(self._qualname_for(node.name), node.name, getattr(node, "lineno", 0), node))
         if self.include_nested:
             self.func_stack.append(node.name)
             self.function_depth += 1
-            try: self.generic_visit(node)
-            finally: self.function_depth -= 1; self.func_stack.pop()
+            try:
+                self.generic_visit(node)
+            finally:
+                self.function_depth -= 1
+                self.func_stack.pop()
 
 def node_span(node):
-    return (getattr(node, "lineno", 10**18), getattr(node, "col_offset", 0),
-            getattr(node, "end_lineno", getattr(node, "lineno", 10**18)), getattr(node, "end_col_offset", 0))
+    return (
+        getattr(node, "lineno", 10**18),
+        getattr(node, "col_offset", 0),
+        getattr(node, "end_lineno", getattr(node, "lineno", 10**18)),
+        getattr(node, "end_col_offset", 0),
+    )
 
 def get_full_code(source_lines, node):
-    if not hasattr(node, "lineno"): return ""
+    if not hasattr(node, "lineno"):
+        return ""
     start = node.lineno
     end = node.end_lineno
     decs = getattr(node, "decorator_list", [])
     for d in decs:
-        if hasattr(d, "lineno"): start = min(start, d.lineno)
-    
-    seg = source_lines[start-1:end]
-    if not seg: return ""
+        if hasattr(d, "lineno"):
+            start = min(start, d.lineno)
+
+    seg = source_lines[start - 1 : end]
+    if not seg:
+        return ""
     if hasattr(node, "end_col_offset") and node.end_col_offset is not None:
-         seg[-1] = seg[-1][:node.end_col_offset]
+        seg[-1] = seg[-1][: node.end_col_offset]
     return "".join(seg)
 
 def contains_range(node, start, end):
@@ -447,28 +691,25 @@ def contains_range(node, start, end):
 
 def pick_best_enclosing(tree, start, end):
     candidates = []
-    # Only include blocks, excluding single-line statements like Assign/Expr
     check_types = (
         ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef,
         ast.If, ast.For, ast.AsyncFor, ast.While,
         ast.With, ast.AsyncWith, ast.Try
     )
-    # Py3.10+ Match
-    if sys.version_info >= (3, 10):
-        if hasattr(ast, 'Match'): check_types += (ast.Match,)
+    if sys.version_info >= (3, 10) and hasattr(ast, "Match"):
+        check_types += (ast.Match,)
 
     for n in ast.walk(tree):
-        if isinstance(n, check_types):
-            if contains_range(n, start, end):
-                candidates.append(n)
-    if not candidates: return None
-    
-    # Priority: Function/Class > Other Blocks > ...
-    # Smallest span wins (most specific).
+        if isinstance(n, check_types) and contains_range(n, start, end):
+            candidates.append(n)
+    if not candidates:
+        return None
+
     def priority(n):
-        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)): return 0
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            return 0
         return 1
-    
+
     candidates.sort(key=lambda n: (n.end_lineno - n.lineno, priority(n), n.lineno))
     return candidates[0]
 
@@ -498,7 +739,6 @@ class UsedNameCollector(ast.NodeVisitor):
         self.names.add(node.id)
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
-        # Only capture root name to avoid over-matching attribute names
         self._root_name(node.value)
         self.generic_visit(node)
 
@@ -525,8 +765,7 @@ if at_pattern_str:
         print(f"  {e}", file=sys.stderr)
         sys.exit(2)
 
-def process_file(path):
-    # Returns (matches, errors)
+def process_file(path, targets=None):
     try:
         with tokenize.open(path) as f:
             source = f.read()
@@ -534,29 +773,34 @@ def process_file(path):
         print(f"Error reading {path}: {e}", file=sys.stderr)
         return [], True
 
+    # Fast Path Optimization (1)
+    if (not targets and not line_mode and not at_regex and not regex and
+        not list_mode and type_filter == 'py' and target):
+        check_name = target.split(".")[-1]
+        needle1 = f"def {check_name}"
+        needle2 = f"async def {check_name}"
+        if needle1 not in source and needle2 not in source:
+            return [], False
+
     lines = source.splitlines(True)
-    
+
     # Check type filter for explicit files as well
     if type_filter == 'py' and not is_py_file(path):
         if not line_mode and not at_regex:
-             # Skip silent or warn? Just skip to match glob behavior.
-             return [], False
+            return [], False
 
-    # Determine mode and line range (fixes issue #4: clearer control flow)
     current_line_mode = line_mode
     smart = False
     start = end = -1
-    at_match_lineno = None  # set only when --at is used
+    at_match_lineno = None
 
-    # Resolve --at pattern to line mode
     if at_regex:
         found_lineno = -1
         for i, line in enumerate(lines):
-             if at_regex.search(line):
-                 found_lineno = i + 1
-                 break
+            if at_regex.search(line):
+                found_lineno = i + 1
+                break
         if found_lineno == -1:
-            # Pattern not in this file - silent per-file non-match is normal
             return [], False
 
         current_line_mode = True
@@ -564,7 +808,6 @@ def process_file(path):
         start = end = found_lineno
         at_match_lineno = found_lineno
 
-    # Parse explicit line mode arguments
     elif line_mode:
         try:
             smart, start, end = parse_line_spec(line_spec)
@@ -572,11 +815,9 @@ def process_file(path):
             print(f"Error: {e}", file=sys.stderr)
             return [], True
 
-    # Suffixes for --at matching
     match_suffix_paren = f" (match line {at_match_lineno})" if at_match_lineno else ""
     match_suffix_semi = f"; match line {at_match_lineno}" if at_match_lineno else ""
 
-    # Line Mode Processing
     if current_line_mode:
         if not smart:
             s = max(1, start - context_lines)
@@ -585,18 +826,16 @@ def process_file(path):
             ctx_info = f" (+{context_lines} context)" if context_lines > 0 else ""
             header = f"==> {path}:lines {start}-{end}{ctx_info}{match_suffix_paren} <=="
             return [(header, block)], False
-        
+
         if not is_py_file(path):
-            # Fallback smart mode
             PAD = 25 if context_lines == 0 else context_lines
             s = max(1, start - PAD)
             e = min(len(lines), end + PAD)
             block = "".join(lines[s-1:e]).rstrip("\n")
-            ctx_info = f" (+{PAD} context)" 
+            ctx_info = f" (+{PAD} context)"
             header = f"==> {path}:lines {start}-{end}{ctx_info}{match_suffix_paren} (padded) <=="
             return [(header, block)], False
-    
-    # AST Mode: Only parse Python source files if not in line mode.
+
     if not current_line_mode and not is_py_file(path):
         return [], False
 
@@ -606,9 +845,7 @@ def process_file(path):
         print(f"Error parsing {path}: {e}", file=sys.stderr)
         return [], True
 
-    # Smart Line Mode (AST)
-    if current_line_mode: 
-        # smart, start, end already resolved
+    if current_line_mode:
         node = pick_best_enclosing(tree, start, end)
         if node:
             if context_lines > 0:
@@ -619,59 +856,67 @@ def process_file(path):
             else:
                 code = get_full_code(lines, node).rstrip("\n")
                 ctx_info = ""
-            
+
             name = getattr(node, "name", "unknown")
             lineno = getattr(node, "lineno", start)
             header = f"==> {path}:{name} (line {lineno}{match_suffix_semi}){ctx_info} <=="
             return [(header, code)], False
-        else:
-            PAD = 25 if context_lines == 0 else context_lines
-            s = max(1, start - PAD)
-            e = min(len(lines), end + PAD)
-            block = "".join(lines[s-1:e]).rstrip("\n")
-            ctx_info = f" (+{PAD} context)" 
-            header = f"==> {path}:lines {start}-{end}{ctx_info}{match_suffix_paren} (padded) <=="
-            return [(header, block)], False
 
-    # Function Extraction Mode
+        PAD = 25 if context_lines == 0 else context_lines
+        s = max(1, start - PAD)
+        e = min(len(lines), end + PAD)
+        block = "".join(lines[s-1:e]).rstrip("\n")
+        ctx_info = f" (+{PAD} context)"
+        header = f"==> {path}:lines {start}-{end}{ctx_info}{match_suffix_paren} (padded) <=="
+        return [(header, block)], False
+
     ex = Extractor(include_nested=include_nested, import_mode=import_mode)
     ex.visit(tree)
-    
+
     all_defs = dedup_defs(ex.defs)
-    
-    # Filter
-    matched_defs = []
+
     if list_mode:
         if not regex and not target:
-             matched_defs = all_defs
+            matched_defs = all_defs
         else:
-             def is_match_list(d):
-                 if regex: return bool(regex.search(d.qualname))
-                 if target and "." in target: return d.qualname == target
-                 if target: return d.name == target
-                 return False
-             matched_defs = [d for d in all_defs if is_match_list(d)]
-        
-        out_data = []
-        for d in matched_defs:
-            out_data.append((d.qualname, d.lineno))
-        
+            def is_match_list(d):
+                if regex:
+                    return bool(regex.search(d.qualname))
+                if target and "." in target:
+                    return d.qualname == target
+                if target:
+                    return d.name == target
+                return False
+            matched_defs = [d for d in all_defs if is_match_list(d)]
+
+        out_data = [(d.qualname, d.lineno) for d in matched_defs]
         if out_data:
-            return out_data, False 
+            return out_data, False
         return [], False
-    
+
     def is_match(d):
-        if regex: return bool(regex.search(d.qualname))
-        if target and "." in target: return d.qualname == target
-        if target: return d.name == target
+        if regex:
+            return bool(regex.search(d.qualname))
+        if target and "." in target:
+            return d.qualname == target
+        if target:
+            return d.name == target
         return False
-    
+
     matched_defs = [d for d in all_defs if is_match(d)]
-    
+
+    if targets:
+        targets = sorted(list(set(targets)))
+        def has_overlap(d, tgs):
+            s = getattr(d.node, "lineno", 0)
+            e = getattr(d.node, "end_lineno", s)
+            idx = bisect.bisect_left(tgs, s)
+            return idx < len(tgs) and tgs[idx] <= e
+        matched_defs = [d for d in matched_defs if has_overlap(d, targets)]
+
     if first_only and matched_defs:
         matched_defs = matched_defs[:1]
-    
-    # Imports
+
     imports_out = []
     if import_mode != "none":
         imports_sorted = sorted(ex.imports, key=lambda i: node_span(i.node))
@@ -687,19 +932,20 @@ def process_file(path):
             for imp in imports_sorted:
                 out = set()
                 if isinstance(imp.node, ast.Import):
-                    for a in imp.node.names: out.add(a.asname or a.name.split('.')[0])
+                    for a in imp.node.names:
+                        out.add(a.asname or a.name.split('.')[0])
                 elif isinstance(imp.node, ast.ImportFrom):
-                     for a in imp.node.names: 
+                    for a in imp.node.names:
                         if a.name == "*":
                             out.add("*")
                         else:
                             out.add(a.asname or a.name)
-                
+
                 if "*" in out or (out & used_names):
                     imports_out.append(imp)
 
     output_blocks = []
-    
+
     imp_code = ""
     if imports_out and matched_defs:
         imp_code = "\n".join([get_full_code(lines, i.node).rstrip() for i in imports_out])
@@ -710,40 +956,76 @@ def process_file(path):
         code = get_full_code(lines, d.node).rstrip("\n")
         if i == 0 and imp_code:
             code = imp_code + code
-            
         header = f"==> {path}:{d.qualname} (line {d.lineno}) <=="
         output_blocks.append((header, code))
-        
+
     return output_blocks, False
 
 # --- Run ---
-file_list, missing_list = expand_roots(roots)
+file_targets = {}
+if matches_file:
+    try:
+        with open(matches_file) as f:
+            for l in f:
+                l = l.strip()
+                if not l:
+                    continue
+                try:
+                    data = json.loads(l)
+                except json.JSONDecodeError:
+                    continue
+
+                if data.get("type") == "match":
+                    path_data = data.get("data", {})
+                    fname = path_data.get("path", {}).get("text")
+                    lno = path_data.get("line_number")
+                    if fname and lno is not None:
+                        if fname.startswith("./"):
+                            fname = fname[2:]
+
+                        if type_filter == 'py' and not is_py_file(fname):
+                            continue
+
+                        file_targets.setdefault(fname, []).append(lno)
+    except Exception as e:
+        print(f"Error reading matches file: {e}", file=sys.stderr)
+        sys.exit(2)
+
+# Always expand roots to establish canonical order and warnings.
+file_list_canonical, missing_list_baseline = expand_roots(roots)
+
+if file_targets:
+    file_list = [f for f in file_list_canonical if f in file_targets]
+    missing_list = missing_list_baseline
+else:
+    file_list = file_list_canonical
+    missing_list = missing_list_baseline
+
 any_match = False
 had_error = False
 
-# Print warnings for missing roots (non-fatal)
 for m in missing_list:
-    if "glob matched no files" in m:
+    if m.startswith("glob matched no files:"):
         print(f"Warning: {m}", file=sys.stderr)
     else:
         print(f"Warning: file not found: {m}", file=sys.stderr)
 
 for path in file_list:
-    matches, error = process_file(path)
+    tgs = file_targets.get(path) if file_targets else None
+    matches, error = process_file(path, targets=tgs)
     if error:
         had_error = True
-    
+
     if matches:
         any_match = True
-        
+
         if list_mode:
             print(f"==> {path} <==")
-            # Dynamic alignment based on qualnames in THIS file
             max_qn = max((len(qn) for qn, ln in matches), default=0)
             col_width = max(max_qn + 4, 40)
             for qn, ln in matches:
                 print(f"{qn:<{col_width}} line {ln}")
-            print() 
+            print()
         else:
             for header, code in matches:
                 print(header)
@@ -752,17 +1034,18 @@ for path in file_list:
 
 if not any_match:
     if target and type_filter == 'py' and not list_mode and sys.stderr.isatty():
-         print("Tip: run with --list to see available definitions.", file=sys.stderr)
+        print("Tip: run with --list to see available definitions.", file=sys.stderr)
     sys.exit(2 if had_error else 1)
 
 sys.exit(0)
 PY
+    ret=$?
+    set -e
+    return $ret
 }
 
 # --- Output Handling ---
 run_with_optional_highlighting() {
-    # Decide color policy
-    # PF_COLOR_MODE: always|auto|never (optional)
     local pf_mode="${PF_COLOR_MODE:-auto}"
 
     local want_color=0
@@ -778,18 +1061,14 @@ run_with_optional_highlighting() {
 
     if [ "$want_color" -eq 1 ]; then
         local -a highlighter=(cat)
-        
-        # We are forcing color for the highlighter because we already decided want_color=1
+
         if command -v bat >/dev/null 2>&1; then
              highlighter=(bat --color=always --style=plain --paging=never)
-             
-             # If we're only dealing with Python, always force Python highlighting (even in line mode)
              if [ "$TYPE_FILTER" = "py" ]; then
                  highlighter=(bat --color=always --language=python --style=plain --paging=never)
              fi
         elif command -v batcat >/dev/null 2>&1; then
              highlighter=(batcat --color=always --style=plain --paging=never)
-             
              if [ "$TYPE_FILTER" = "py" ]; then
                  highlighter=(batcat --color=always --language=python --style=plain --paging=never)
              fi
@@ -800,7 +1079,7 @@ run_with_optional_highlighting() {
                  highlighter=(pygmentize -g -f terminal256)
              fi
         fi
-        
+
         set +e
         extract_code | "${highlighter[@]}"
         local -a statuses=("${PIPESTATUS[@]}")
@@ -815,22 +1094,3 @@ run_with_optional_highlighting() {
 
 run_with_optional_highlighting
 exit $?
-
-# --- Regression Tests / Examples ---
-# 1. Default list mode
-# ./printfunction.sh routes.py
-# Expected: Lists functions in routes.py (e.g. hello, world)
-
-# 2. Explicit query overrides default list mode
-# ./printfunction.sh hello routes.py
-# Expected: Prints source code of hello function
-
-# 3. Regex mode still works
-# ./printfunction.sh --regex 'hel.*' routes.py
-# Expected: Prints source code of hello function
-
-# 4. Explicit line mode
-# ./printfunction.sh lines 10-20 routes.py
-# Expected: Prints lines 10-20
-
-
