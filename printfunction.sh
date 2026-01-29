@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# printfunction.sh version 1.3.3
-# Alan Rockefeller - January 27, 2026
+# printfunction.sh version 1.4.0
+# Alan Rockefeller - January 29, 2026
 
 set -euo pipefail
 
@@ -365,9 +365,16 @@ run_rg_prefilter() {
    if [ $rg_exit -eq 0 ]; then
        export PF_MATCHES_FILE="$tmp_matches"
        export PF_RG_USED="1"
+       if [ "${PF_TEST_RG_USED:-0}" = "1" ]; then
+           echo "DEBUG: RG USED" >&2
+       fi
        rm "$tmp_err"
        return 0
    elif [ $rg_exit -eq 1 ]; then
+       export PF_RG_USED="1"
+       if [ "${PF_TEST_RG_USED:-0}" = "1" ]; then
+           echo "DEBUG: RG USED" >&2
+       fi
        rm "$tmp_matches"
        rm "$tmp_err"
        # Fast exit on no-match is opt-in (PF_FAST_NO_MATCH=1)

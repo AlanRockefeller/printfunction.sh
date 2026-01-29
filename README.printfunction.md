@@ -1,14 +1,12 @@
 # printfunction.sh
-# Version 1.3.3
-# By Alan Rockefeller — January 27, 2026  
+# Version 1.4.0
+# By Alan Rockefeller — January 29, 2026
 
 **Extract Python functions with surgical precision using AST parsing.**
 
 A command-line tool that uses Python’s abstract syntax tree to extract function and method definitions from source files. Unlike `grep` or `sed`, it understands Python structure—handling decorators, multi-line definitions, and nested scopes correctly.
 
-As of **v1.2+**, it supports multi-file searching, directory recursion, globs, regex targeting, and line-range extraction.
-**v1.3.1** adds `--at PATTERN` to find enclosing blocks by content match.
-**v1.3.2** defaults to listing available functions if no query/mode is provided.
+As of **v1.4+**, it features **high-performance searching** via `ripgrep` integration and optimized globbing, making it suitable for large repositories. It supports multi-file searching, directory recursion, globs (including brackets), and context-aware extraction.
 
 ---
 
@@ -35,6 +33,9 @@ printfunction foo a.py b.py
 
 # Recursive search in a directory
 printfunction foo .
+
+# Bracket globs
+printfunction foo "tests/[a-c]*.py"
 
 # Extract with imports
 printfunction --import=used fetch_data scraper.py
@@ -68,12 +69,14 @@ printfunction MyClass.process myfile.py  # Complete, accurate, always works
 
 ## What changed since v1.0?
 
-v1.3.1 expands `printfunction` from “single-file function extractor” into a **small codebase search tool**:
+v1.4.0 transforms `printfunction` from a small-scale extractor into a **performant repository search tool**:
 
 - **New calling convention:** `printfunction [OPTIONS] [QUERY] [FILES...]`
+- **Performance:** Automatic `ripgrep` pre-filtering and fast-path string scanning
 - **Multi-file output with per-file headers**
 - **Recursive directory scanning** with sensible default ignores
 - **Glob support** (including `**/*.py` with `recursive=True` in Python)
+- **Bracket Globs:** Supports shell-style `[a-z]` patterns in file paths
 - **Regex mode** via `--regex` (no positional QUERY required)
 - **Content-based targeting** via `--at PATTERN` (finds enclosing block around match)
 - **Line range extraction** (`lines START-END`) and **smart block extraction** (`~START-END`)
@@ -86,6 +89,7 @@ v1.3.1 expands `printfunction` from “single-file function extractor” into a 
 ## Features
 
 - **AST-based extraction** – Captures complete function bodies including decorators, regardless of formatting
+- **High Performance** – Uses `ripgrep` (if available) to pre-filter files before parsing
 - **Smart targeting** – Extract by name (`foo`) or qualified name (`Class.method`)
 - **Nested support** – `--all` descends into function bodies to include nested defs in search/listing
 - **Import analysis**
@@ -316,16 +320,19 @@ printfunction --at "TODO" --type all .
 - Bash (standard on Linux/macOS)
 - Python 3.8+
 
+**Recommended for speed:**
+- `ripgrep` (rg) — Significantly speeds up searches in large directories
+
 **Optional (for syntax highlighting):**
 - `bat` or `batcat` (recommended)
 - `pygmentize` (from Pygments)
 
 ```bash
 # macOS
-brew install bat
+brew install bat ripgrep
 
 # Ubuntu/Debian
-apt install bat
+apt install bat ripgrep
 
 # Or install pygmentize
 pip install pygments
@@ -336,19 +343,20 @@ pip install pygments
 ## How It Works
 
 1. **Expand roots** – Accepts files, directories (recursive), and globs; dedupes paths while preserving discovery order.
-2. **Parse (Python only)** – Uses `ast.parse()` to build a structural view of Python source.
-3. **Track context** – Builds fully-qualified names by tracking class and (optionally) function nesting:
+2. **Pre-filter** – Checks files for the target string (using `rg` or fast string scanning) to skip parsing irrelevant files.
+3. **Parse (Python only)** – Uses `ast.parse()` to build a structural view of Python source.
+4. **Track context** – Builds fully-qualified names by tracking class and (optionally) function nesting:
    - `Foo.bar`
    - `outer.inner`
-4. **Handle decorators** – Includes `@decorators` above the `def` line as part of the extracted span.
-5. **Match**
+5. **Handle decorators** – Includes `@decorators` above the `def` line as part of the extracted span.
+6. **Match**
    - Direct name match (`foo`) or exact qualified match (`Class.method`)
    - Regex match over qualnames (`--regex`)
    - Content match (`--at`) -> maps to smart line mode
-6. **Line mode**
+7. **Line mode**
    - `lines A-B`: raw line slice (optionally with `--context`)
    - `~A-B`: selects the best enclosing AST block (function/class/control block). If not Python, falls back to padded raw lines.
-7. **Import extraction**
+8. **Import extraction**
    - `--import=all`: prints module/class-scope imports
    - `--import=used`: collects “root names” used inside the matched function nodes and filters imports accordingly (best-effort)
 

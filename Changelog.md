@@ -1,5 +1,20 @@
 # Changelog
 
+## printfunction.sh [1.4.0] - 2026-01-29
+
+#### Added
+- **`ripgrep` Integration:** Added an optimization layer that uses `rg` (if installed) to pre-filter files before Python AST parsing, significantly reducing runtime on large codebases.
+- **Bracket Glob Support:** Added support for shell-style bracket patterns in file paths (e.g., `tests/[a-c]*.py`).
+- **Signal Handling:** Added `SIGPIPE` handling to prevent stack traces when piping output to tools like `head` or `less`.
+
+#### Changed
+- **Optimized Globbing:** Recursive globs (`**/*.py`) now use an optimized directory walk that applies ignore filters *during* discovery rather than after.
+- **Fast-Path Scanning:** Files are now pre-scanned for the target string to skip AST parsing for files that clearly don't contain the definition.
+- **Ignore List:** Added `site-packages`, `dist-packages`, and `verify_venv` to the default ignore configuration.
+
+#### Fixed
+- **Environment Hygiene:** Explicitly unset internal environment variables (`PF_MISSING_ROOTS`, `PF_MATCHES_FILE`, etc.) to prevent leakage from wrapper scripts.
+
 ## printfunction.sh [1.3.3] - 2026-01-27
 
 ### Changed

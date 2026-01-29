@@ -78,10 +78,11 @@ def test_directory_yielding_glob_no_false_warning(script_path, fixtures_dir):
 def test_ignored_only_glob_behavior(script_path, fixtures_dir):
     create_file(fixtures_dir, "verify_venv/x.py", "def target(): pass\n")
     
+    # NEW behavior: ignored dirs are always ignored; user-provided globs inside ignored dirs do NOT override.
     res_rg = run_script(script_path, ["target", "verify_venv/**"], cwd=fixtures_dir)
-    assert res_rg.returncode == 0
+    assert res_rg.returncode == 1
     assert "glob matched no files" not in res_rg.stderr
-    assert "verify_venv/x.py" in res_rg.stdout
+    assert res_rg.stdout == ""
     assert "DEBUG: RG USED" in res_rg.stderr
     
     env = os.environ.copy()
@@ -89,6 +90,7 @@ def test_ignored_only_glob_behavior(script_path, fixtures_dir):
     res_no_rg = run_script(script_path, ["target", "verify_venv/**"], cwd=fixtures_dir, env=env)
     
     # Parity check
+    assert res_rg.returncode == res_no_rg.returncode
     assert res_rg.stdout == res_no_rg.stdout
     assert res_rg.stderr.replace("DEBUG: RG USED\n", "") == res_no_rg.stderr
 
