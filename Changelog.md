@@ -1,5 +1,9 @@
 # Changelog
 
+## gitdiffshow [1.0.3] - 2026-03-13
+
+- Changed default behavior to show all repo files; added `--relative` flag for directory-specific scoping.
+
 ## printfunction.sh [1.4.0] - 2026-01-29
 
 #### Added

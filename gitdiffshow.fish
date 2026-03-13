@@ -25,12 +25,13 @@ set -l __GITDIFFSHOW_NO_PAGER_ENV \
 #   --printwholefile   Print the entire file with line numbers (old behavior)
 #   --all              Alias for --printwholefile  (requested)
 #   --diff             Print git diff output in addition to the function context
+#   --relative         Only show files relative to the current directory
 #
 # TIP:
 #   Tune excerpt size with:
 #     set -x GITDIFFSHOW_CONTEXT 30
 #
-# Version 1.0.2 by Alan Rockefeller - January 27, 2026
+# Version 1.0.3 by Alan Rockefeller - March 13, 2026
 #
 # ======================================================================
 
@@ -288,6 +289,7 @@ end
 function gitdiffshow
     set -l print_wholefile 0
     set -l show_diff 0
+    set -l use_relative 0
     set -l color_mode auto
     set -l revspec
 
@@ -297,6 +299,8 @@ function gitdiffshow
                 set print_wholefile 1
             case --diff
                 set show_diff 1
+            case --relative
+                set use_relative 1
             case --color
                 set color_mode always
             case '--color=*'
@@ -312,9 +316,10 @@ function gitdiffshow
                 echo "gitdiffshow - Show context for files changed in git diff"
                 echo ""
                 echo "USAGE:"
-                echo "  gitdiffshow [--all|--printwholefile] [--diff] [--color[=MODE]|--no-color] [git-diff-revspec...]"
+                echo "  gitdiffshow [--all|--printwholefile] [--diff] [--relative] [--color[=MODE]|--no-color] [git-diff-revspec...]"
                 echo ""
                 echo "DEFAULT:"
+                echo "  - Shows all changed files in the repository (regardless of current directory)"
                 echo "  - Python files: print only affected functions/methods (via print_function.sh)"
                 echo "  - Other files: print numbered excerpts around changed hunks"
                 echo ""
@@ -322,6 +327,7 @@ function gitdiffshow
                 echo "  --all              Print entire file contents with line numbers (alias)"
                 echo "  --printwholefile   Same as --all"
                 echo "  --diff             Print git diff output in addition to the function context"
+                echo "  --relative         Only show files relative to the current directory"
                 echo "  --color[=MODE]     Color mode: always, auto, never (default: auto). Bare --color implies always."
                 echo "  --no-color, -n     Disable ANSI color (best for pasting into AI)"
                 echo ""
@@ -332,6 +338,7 @@ function gitdiffshow
                 echo "  gitdiffshow HEAD"
                 echo "  gitdiffshow main.."
                 echo "  gitdiffshow --all"
+                echo "  gitdiffshow --relative"
                 echo "  gitdiffshow --diff --no-color"
                 echo ""
                 echo "TIP: Tune excerpt size:"
@@ -343,7 +350,24 @@ function gitdiffshow
     end
 
     # Get changed files (NUL-delimited for safety)
-    set -l filenames (git diff --name-only -z --relative $revspec 2>/dev/null | string split0)
+    set -l diff_flags --name-only -z
+    if test $use_relative -eq 1
+        set diff_flags $diff_flags --relative
+    end
+    set -l filenames (git diff $diff_flags $revspec 2>/dev/null | string split0)
+
+    # When not using --relative, paths are repo-root-relative.
+    # Resolve them to absolute paths so file-existence checks work from any cwd.
+    if test $use_relative -eq 0
+        set -l repo_root (git rev-parse --show-toplevel 2>/dev/null)
+        if test -n "$repo_root"
+            set -l abs_filenames
+            for f in $filenames
+                set abs_filenames $abs_filenames "$repo_root/$f"
+            end
+            set filenames $abs_filenames
+        end
+    end
 
     if test (count $filenames) -eq 0
         echo "No changes found for: git diff $revspec"

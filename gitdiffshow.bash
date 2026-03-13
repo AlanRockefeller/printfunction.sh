@@ -22,6 +22,7 @@ GITDIFFSHOW_NO_PAGER_ENV=(PAGER=cat GIT_PAGER=cat BAT_PAGER=cat BAT_PAGING=never
 #   --printwholefile   Print the entire file with line numbers (old behavior)
 #   --all              Alias for --printwholefile  (requested)
 #   --diff             Print git diff output in addition to the function context
+#   --relative         Only show files relative to the current directory
 #   --color            Force ANSI color output
 #   --no-color         Disable ANSI color (best for pasting into AI)
 #
@@ -29,7 +30,7 @@ GITDIFFSHOW_NO_PAGER_ENV=(PAGER=cat GIT_PAGER=cat BAT_PAGER=cat BAT_PAGING=never
 #   Tune excerpt size with:
 #     export GITDIFFSHOW_CONTEXT=30
 #
-# Version 1.0.2 by Alan Rockefeller - January 27, 2026
+# Version 1.0.3 by Alan Rockefeller - March 13, 2026
 #
 # ======================================================================
 
@@ -302,6 +303,7 @@ PY
 gitdiffshow() {
   local print_wholefile=0
   local show_diff=0
+  local use_relative=0
   local color_mode="auto"
   local -a revspec=()
 
@@ -313,6 +315,9 @@ gitdiffshow() {
         ;;
       --diff)
         show_diff=1
+        ;;
+      --relative)
+        use_relative=1
         ;;
       --color)
         color_mode="always"
@@ -332,9 +337,10 @@ gitdiffshow() {
 gitdiffshow - Show context for files changed in git diff
 
 USAGE:
-  gitdiffshow [--all|--printwholefile] [--diff] [--color[=MODE]|--no-color] [git-diff-revspec...]
+  gitdiffshow [--all|--printwholefile] [--diff] [--relative] [--color[=MODE]|--no-color] [git-diff-revspec...]
 
 DEFAULT:
+  - Shows all changed files in the repository (regardless of current directory)
   - Python files: print only affected functions/methods (via print_function.sh)
   - Other files: print numbered excerpts around changed hunks
 
@@ -342,6 +348,7 @@ FLAGS:
   --all              Print entire file contents with line numbers (alias)
   --printwholefile   Same as --all
   --diff             Print git diff output in addition to the function context
+  --relative         Only show files relative to the current directory
   --color[=MODE]     Color mode: always, auto, never (default: auto). Bare --color implies always.
   --no-color, -n     Disable ANSI color (best for pasting into AI)
 
@@ -351,6 +358,7 @@ EXAMPLES:
   gitdiffshow HEAD
   gitdiffshow main..
   gitdiffshow --all
+  gitdiffshow --relative
   gitdiffshow --diff --no-color
 
 TIP: Tune excerpt size:
@@ -365,10 +373,28 @@ EOF
   done
 
   # Get changed files (NUL-delimited for safety)
+  local -a diff_flags=(--name-only -z)
+  if [[ "$use_relative" -eq 1 ]]; then
+    diff_flags+=(--relative)
+  fi
   local -a filenames=()
   while IFS= read -r -d '' f; do
     filenames+=("$f")
-  done < <(git diff --name-only -z --relative "${revspec[@]}" 2>/dev/null || true)
+  done < <(git diff "${diff_flags[@]}" "${revspec[@]}" 2>/dev/null || true)
+
+  # When not using --relative, paths are repo-root-relative.
+  # Resolve them to absolute paths so file-existence checks work from any cwd.
+  if [[ "$use_relative" -eq 0 ]]; then
+    local repo_root
+    repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
+    if [[ -n "$repo_root" ]]; then
+      local -a abs_filenames=()
+      for f in "${filenames[@]}"; do
+        abs_filenames+=("$repo_root/$f")
+      done
+      filenames=("${abs_filenames[@]}")
+    fi
+  fi
 
   if [[ "${#filenames[@]}" -eq 0 ]]; then
     echo "No changes found for: git diff ${revspec[*]:-}"
