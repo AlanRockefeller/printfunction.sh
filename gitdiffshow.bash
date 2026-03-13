@@ -382,6 +382,20 @@ EOF
     filenames+=("$f")
   done < <(git diff "${diff_flags[@]}" "${revspec[@]}" 2>/dev/null || true)
 
+  # When not using --relative, paths are repo-root-relative.
+  # Resolve them to absolute paths so file-existence checks work from any cwd.
+  if [[ "$use_relative" -eq 0 ]]; then
+    local repo_root
+    repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
+    if [[ -n "$repo_root" ]]; then
+      local -a abs_filenames=()
+      for f in "${filenames[@]}"; do
+        abs_filenames+=("$repo_root/$f")
+      done
+      filenames=("${abs_filenames[@]}")
+    fi
+  fi
+
   if [[ "${#filenames[@]}" -eq 0 ]]; then
     echo "No changes found for: git diff ${revspec[*]:-}"
     echo "Try: gitdiffshow --cached"

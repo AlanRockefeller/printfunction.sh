@@ -356,6 +356,19 @@ function gitdiffshow
     end
     set -l filenames (git diff $diff_flags $revspec 2>/dev/null | string split0)
 
+    # When not using --relative, paths are repo-root-relative.
+    # Resolve them to absolute paths so file-existence checks work from any cwd.
+    if test $use_relative -eq 0
+        set -l repo_root (git rev-parse --show-toplevel 2>/dev/null)
+        if test -n "$repo_root"
+            set -l abs_filenames
+            for f in $filenames
+                set abs_filenames $abs_filenames "$repo_root/$f"
+            end
+            set filenames $abs_filenames
+        end
+    end
+
     if test (count $filenames) -eq 0
         echo "No changes found for: git diff $revspec"
         echo "Try: gitdiffshow --cached"
