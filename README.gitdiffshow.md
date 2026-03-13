@@ -1,8 +1,8 @@
 # gitdiffshow
 
 **Author:** Alan Rockefeller  
-**Version:** 1.0.2  
-**Date:** January 27, 2026  
+**Version:** 1.0.3
+**Date:** March 13, 2026
 **License:** MIT  
 **Repository:** <https://github.com/AlanRockefeller/printfunction.sh>
 
@@ -35,7 +35,7 @@ chmod +x ~/.local/bin/gitdiffshow
 ## Usage
 
 ```bash
-gitdiffshow [--all|--printwholefile] [--diff] [--color[=MODE]|--no-color] [git-diff-revspec...]
+gitdiffshow [--all|--printwholefile] [--diff] [--relative] [--color[=MODE]|--no-color] [git-diff-revspec...]
 ```
 
 ### Examples
@@ -64,6 +64,8 @@ gitdiffshow --diff HEAD
 ```
 
 ## Default Behavior
+
+By default, `gitdiffshow` shows all changed files in the repository regardless of your current working directory. Use `--relative` to limit output to files under the current directory.
 
 ### For Python Files (*.py)
 - Displays only the complete functions/methods that contain changed lines
@@ -97,6 +99,7 @@ export GITDIFFSHOW_DEBUG=1
 - `--all` - Print entire file contents with line numbers
 - `--printwholefile` - Same as `--all` (alternative syntax)
 - `--diff` - Print git diff output in addition to the function context
+- `--relative` - Only show files relative to the current directory (by default, all repo files are shown)
 - `--wholefile` - Same as `--all` (alternative syntax)
 - `--whole-file` - Same as `--all` (alternative syntax)
 - `--color[=MODE]` - Force ANSI color output. `MODE` can be `always`, `never`, or `auto` (default: `auto`). Bare `--color` implies `always`.
