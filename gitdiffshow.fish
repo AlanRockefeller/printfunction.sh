@@ -78,7 +78,9 @@ end
 
 # __gitdiffshow_patch_helper: Unified Python-based patch parser.
 # Usage: __gitdiffshow_patch_helper <command> <patch_file> [args...]
-# Commands: list-files, analyze <file_path> [local_path], raw-diff <file_path>
+# Commands: list-files (INDEX|STATUS|OLD_PATH|NEW_PATH),
+#           analyze <file_path> [local_path] [entry_index],
+#           raw-diff <file_path> [entry_index]
 function __gitdiffshow_patch_helper
     set -l pycode '
 import ast
@@ -321,8 +323,8 @@ def resolve_entry(entries, target_path, index_arg=None):
     return find_patch_for_path(entries, target_path)
 
 if command == "list-files":
-    for e in entries:
-        print(f"{e.status}|{e.old_path}|{e.new_path}")
+    for i, e in enumerate(entries):
+        print(f"{i}|{e.status}|{e.old_path}|{e.new_path}")
 elif command == "analyze":
     target_path = sys.argv[3]
     local_path = sys.argv[4] if len(sys.argv) > 4 else target_path
@@ -683,6 +685,7 @@ function gitdiffshow
         set -l filenames
         set -l patch_paths
         set -l display_labels
+        set -l entry_indices  # original patch entry index (for repeated paths)
 
         # Pre-compute real paths for --relative filtering (done once, not per-file)
         set -l real_cwd ""
@@ -697,9 +700,10 @@ function gitdiffshow
                 continue
             end
             set -l parts (string split '|' -- $line)
-            set -l status $parts[1]
-            set -l old_path $parts[2]
-            set -l new_path $parts[3]
+            set -l orig_idx $parts[1]
+            set -l status $parts[2]
+            set -l old_path $parts[3]
+            set -l new_path $parts[4]
 
             set -l display_path ""
             set -l patch_path ""
@@ -738,6 +742,7 @@ function gitdiffshow
 
             set filenames $filenames $abs_path
             set patch_paths $patch_paths $patch_path
+            set entry_indices $entry_indices $orig_idx
 
             set -l label $display_path
             switch $status
@@ -773,7 +778,7 @@ function gitdiffshow
             set -l f $filenames[$idx]
             set -l pp $patch_paths[$idx]
             set -l dl $display_labels[$idx]
-            set -l entry_idx (math $idx - 1)  # 0-based for Python
+            set -l entry_idx $entry_indices[$idx]
 
             if not test -f "$f"
                 echo

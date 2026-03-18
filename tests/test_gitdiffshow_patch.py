@@ -299,3 +299,65 @@ def test_help_includes_patch(script_path):
     assert res.returncode == 0
     assert "--patch" in res.stdout
     assert "stdin" in res.stdout.lower() or "- for stdin" in res.stdout
+
+
+# ---------------------------------------------------------------------------
+# Multi-commit patch with repeated paths and filtering
+# ---------------------------------------------------------------------------
+
+# Two commits touching the same file, with an unrelated file in between
+# that will be filtered out by --relative when run from tests/.
+MULTI_COMMIT_PATCH = textwrap.dedent("""\
+    diff --git a/docs/readme.txt b/docs/readme.txt
+    index aaa1111..bbb2222 100644
+    --- a/docs/readme.txt
+    +++ b/docs/readme.txt
+    @@ -1,2 +1,3 @@
+     some docs
+    +added line
+     end
+    diff --git a/tests/fixtures/simple.py b/tests/fixtures/simple.py
+    index abc1234..def5678 100644
+    --- a/tests/fixtures/simple.py
+    +++ b/tests/fixtures/simple.py
+    @@ -1,3 +1,4 @@
+     def hello():
+    -    pass
+    +    print("hello")
+    +    return True
+    diff --git a/tests/fixtures/simple.py b/tests/fixtures/simple.py
+    index def5678..ghi9012 100644
+    --- a/tests/fixtures/simple.py
+    +++ b/tests/fixtures/simple.py
+    @@ -2,3 +2,4 @@
+     def hello():
+         print("hello")
+    +    print("world")
+         return True
+""")
+
+
+def test_patch_repeated_path_with_filtering(script_path, repo_root):
+    """Multi-commit patch: both entries for a repeated path should use the correct diff section."""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".patch", delete=False) as f:
+        f.write(MULTI_COMMIT_PATCH)
+        patch_path = f.name
+    try:
+        # Run from tests/ so docs/readme.txt is filtered out by --relative.
+        # Both simple.py entries should still resolve to the correct diff section.
+        res = run_gitdiffshow(
+            script_path,
+            ["--patch", patch_path, "--relative", "--diff", "--no-color"],
+            cwd=os.path.join(repo_root, "tests"),
+        )
+        assert res.returncode == 0
+        # The first simple.py entry's diff has "print("hello")"
+        # The second simple.py entry's diff has "print("world")"
+        # Both must appear; if the index is wrong, the second would show
+        # the first entry's diff again (missing "world").
+        assert 'print("hello")' in res.stdout
+        assert 'print("world")' in res.stdout
+        # docs/readme.txt should be filtered out
+        assert "readme.txt" not in res.stdout
+    finally:
+        os.unlink(patch_path)

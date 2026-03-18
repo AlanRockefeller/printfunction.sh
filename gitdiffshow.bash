@@ -93,7 +93,8 @@ __gitdiffshow_print_excerpt() {
 #
 # Commands:
 #   list-files <patch_file>
-#       Output one line per file entry: STATUS|OLD_PATH|NEW_PATH
+#       Output one line per file entry: INDEX|STATUS|OLD_PATH|NEW_PATH
+#       INDEX is the 0-based position in the parsed patch (for repeated paths).
 #       STATUS is one of: modified, added, deleted, renamed, copied
 #
 #   analyze <patch_file> <file_path> [local_path] [entry_index]
@@ -427,8 +428,8 @@ def resolve_entry(entries, target_path, index_arg=None):
     return find_patch_for_path(entries, target_path)
 
 if command == "list-files":
-    for e in entries:
-        print(f"{e.status}|{e.old_path}|{e.new_path}")
+    for i, e in enumerate(entries):
+        print(f"{i}|{e.status}|{e.old_path}|{e.new_path}")
 
 elif command == "analyze":
     target_path = sys.argv[3]
@@ -804,6 +805,7 @@ EOF
     local -a filenames=()
     local -a patch_paths=()      # paths as they appear in the patch
     local -a display_labels=()   # labels for display (includes status info)
+    local -a entry_indices=()    # original patch entry index (for repeated paths)
 
     # Pre-compute real paths for --relative filtering (done once, not per-file)
     local real_cwd="" real_base=""
@@ -815,8 +817,8 @@ EOF
     local line
     while IFS= read -r line; do
       [[ -z "$line" ]] && continue
-      local status old_path new_path
-      IFS='|' read -r status old_path new_path <<<"$line"
+      local entry_idx status old_path new_path
+      IFS='|' read -r entry_idx status old_path new_path <<<"$line"
 
       # Determine the display path and patch-lookup path
       local display_path="" patch_path=""
@@ -856,6 +858,7 @@ EOF
 
       filenames+=("$abs_path")
       patch_paths+=("$patch_path")
+      entry_indices+=("$entry_idx")
 
       local label="$display_path"
       case "$status" in
@@ -893,6 +896,7 @@ EOF
       local f="${filenames[$idx]}"
       local pp="${patch_paths[$idx]}"
       local dl="${display_labels[$idx]}"
+      local ei="${entry_indices[$idx]}"
 
       if [[ ! -f "$f" ]]; then
         echo
@@ -900,7 +904,7 @@ EOF
         echo
         echo "  (file not in working tree — showing patch diff)"
         echo
-        __gitdiffshow_patch_helper raw-diff "$patch_file" "$pp" "$idx" || true
+        __gitdiffshow_patch_helper raw-diff "$patch_file" "$pp" "$ei" || true
         echo
         continue
       fi
@@ -911,7 +915,7 @@ EOF
 
       if [[ "$show_diff" -eq 1 ]]; then
         echo "--- Patch Diff ---"
-        __gitdiffshow_patch_helper raw-diff "$patch_file" "$pp" "$idx" || true
+        __gitdiffshow_patch_helper raw-diff "$patch_file" "$pp" "$ei" || true
         echo
       fi
 
@@ -930,7 +934,7 @@ EOF
       fi
 
       local raw
-      raw="$(__gitdiffshow_patch_helper analyze "$patch_file" "$pp" "$f" "$idx" || true)"
+      raw="$(__gitdiffshow_patch_helper analyze "$patch_file" "$pp" "$f" "$ei" || true)"
 
       local -a funcs=()
       local -a nonfunc=()
