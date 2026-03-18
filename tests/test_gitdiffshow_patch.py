@@ -1,5 +1,6 @@
 """Tests for gitdiffshow --patch mode."""
 import os
+import stat
 import subprocess
 import tempfile
 import textwrap
@@ -11,7 +12,7 @@ import pytest
 def script_path():
     path = os.path.abspath("gitdiffshow.bash")
     assert os.path.exists(path), "gitdiffshow.bash not found"
-    os.chmod(path, 0o755)
+    os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
     return path
 
 
@@ -26,14 +27,18 @@ def run_gitdiffshow(script_path, args, stdin_data=None, cwd=None, env=None):
     env["NO_COLOR"] = "1"
     env["TERM"] = "dumb"
     cmd = [script_path, *args]
-    result = subprocess.run(
-        cmd,
-        cwd=cwd,
-        env=env,
-        capture_output=True,
-        text=True,
-        input=stdin_data,
-    )
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            input=stdin_data,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise AssertionError(f"gitdiffshow timed out after 30s: {cmd}") from e
     return result
 
 
@@ -175,9 +180,10 @@ def test_patch_with_revspec_errors(script_path):
 # Missing patch file -> error
 # ---------------------------------------------------------------------------
 
-def test_patch_file_missing(script_path):
+def test_patch_file_missing(script_path, tmp_path):
     """--patch with a nonexistent file should produce an error."""
-    res = run_gitdiffshow(script_path, ["--patch", "/tmp/nonexistent_patch_abc123.patch"])
+    missing = tmp_path / "nonexistent_patch_abc123.patch"
+    res = run_gitdiffshow(script_path, ["--patch", str(missing)])
     assert res.returncode != 0
     assert "not found" in res.stderr
 
@@ -248,6 +254,7 @@ def test_patch_relative_filters(script_path, repo_root):
                 cwd=tmpdir,
             )
             # Should find no files (the patch paths don't exist under tmpdir)
+            assert res2.returncode == 0
             assert "No files found in patch" in res2.stdout
     finally:
         os.unlink(patch_path)
