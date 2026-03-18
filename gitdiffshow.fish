@@ -701,13 +701,13 @@ function gitdiffshow
             end
             set -l parts (string split '|' -- $line)
             set -l orig_idx $parts[1]
-            set -l status $parts[2]
+            set -l file_status $parts[2]
             set -l old_path $parts[3]
             set -l new_path $parts[4]
 
             set -l display_path ""
             set -l patch_path ""
-            switch $status
+            switch $file_status
                 case modified added copied
                     set display_path $new_path
                     set patch_path $new_path
@@ -745,7 +745,7 @@ function gitdiffshow
             set entry_indices $entry_indices $orig_idx
 
             set -l label $display_path
-            switch $status
+            switch $file_status
                 case added
                     set label "$display_path (new file)"
                 case deleted
