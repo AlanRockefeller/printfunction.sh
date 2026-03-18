@@ -1,8 +1,8 @@
 # gitdiffshow
 
 **Author:** Alan Rockefeller  
-**Version:** 1.0.3
-**Date:** March 13, 2026
+**Version:** 1.1.0
+**Date:** March 17, 2026
 **License:** MIT  
 **Repository:** <https://github.com/AlanRockefeller/printfunction.sh>
 
@@ -17,6 +17,7 @@
 - **Configurable context**: Adjust the number of lines shown around changes
 - **Multiple output modes**: View excerpts or entire files
 - **Works with any git diff syntax**: Supports all standard git revision specifications
+- **Patch file support**: Review GitHub PR diffs against local code without checking out the branch
 
 ## Installation
 
@@ -35,7 +36,8 @@ chmod +x ~/.local/bin/gitdiffshow
 ## Usage
 
 ```bash
-gitdiffshow [--all|--printwholefile] [--diff] [--relative] [--color[=MODE]|--no-color] [git-diff-revspec...]
+gitdiffshow [OPTIONS] [git-diff-revspec...]
+gitdiffshow --patch FILE [OPTIONS]
 ```
 
 ### Examples
@@ -61,6 +63,13 @@ gitdiffshow abc123..def456
 
 # Show changes with full git diff output (useful for AI code review context)
 gitdiffshow --diff HEAD
+
+# Review a GitHub PR patch file
+gitdiffshow --patch pr-123.patch
+gitdiffshow --patch pr-123.patch --diff
+
+# Pipe a PR patch from GitHub
+curl -L https://github.com/OWNER/REPO/pull/123.patch | gitdiffshow --patch -
 ```
 
 ## Default Behavior
@@ -99,6 +108,7 @@ export GITDIFFSHOW_DEBUG=1
 - `--all` - Print entire file contents with line numbers
 - `--printwholefile` - Same as `--all` (alternative syntax)
 - `--diff` - Print git diff output in addition to the function context
+- `--patch FILE` - Read diff from a patch file instead of running `git diff`. Use `-` for stdin. Patch paths are resolved against the git repo root (if in a repo) or the current directory. Cannot be combined with git diff revision arguments.
 - `--relative` - Only show files relative to the current directory (by default, all repo files are shown)
 - `--wholefile` - Same as `--all` (alternative syntax)
 - `--whole-file` - Same as `--all` (alternative syntax)
@@ -122,7 +132,7 @@ If no syntax highlighters are available, the tool falls back to plain numbered o
 
 ## How It Works
 
-1. **Git diff analysis**: Identifies changed files and line numbers
+1. **Diff analysis**: Identifies changed files and line numbers (from `git diff` or a patch file)
 2. **Python parsing**: For `.py` files, uses AST parsing to map changes to functions/classes
 3. **Smart context**: Groups nearby changes and displays relevant code sections
 4. **Syntax highlighting**: Applies color and formatting for readability
