@@ -1,5 +1,15 @@
 # Changelog
 
+## gitdiffshow [1.1.0] - 2026-03-17
+
+### Added
+- **`--patch FILE` flag:** Read diff from a patch file (or `-` for stdin) instead of running `git diff`. Enables reviewing GitHub PR diffs against local code without checking out the branch.
+  - Patch paths are resolved against the git repo root (if in a repo) or the current directory.
+  - Supports all file statuses: modified, added, deleted, renamed, and copied.
+  - Works with `--diff` to show per-file raw patch output.
+  - Works with `--relative` to filter to files under the current directory.
+  - Mutual exclusion: `--patch` cannot be combined with git diff revision arguments.
+
 ## gitdiffshow [1.0.3] - 2026-03-13
 
 - Changed default behavior to show all repo files; added `--relative` flag for directory-specific scoping.
