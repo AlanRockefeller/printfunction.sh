@@ -96,12 +96,14 @@ __gitdiffshow_print_excerpt() {
 #       Output one line per file entry: STATUS|OLD_PATH|NEW_PATH
 #       STATUS is one of: modified, added, deleted, renamed, copied
 #
-#   analyze <patch_file> <file_path>
+#   analyze <patch_file> <file_path> [local_path] [entry_index]
 #       Output analysis lines (same format as __gitdiffshow_analyze_file):
 #       HUNK|start|end|label, FUNC|qualname|start|end, NONFUNC|start|end|label, NOTE|msg
+#       entry_index selects which patch entry to use (for repeated paths).
 #
-#   raw-diff <patch_file> <file_path>
+#   raw-diff <patch_file> <file_path> [entry_index]
 #       Output the raw diff section for a single file from the patch.
+#       entry_index selects which patch entry to use (for repeated paths).
 #
 # <patch_file> can be "-" to read from stdin (already captured to a temp file by caller).
 #
@@ -413,26 +415,36 @@ with open(patch_file, "r") as f:
 
 entries = parse_patch(patch_text)
 
+def resolve_entry(entries, target_path, index_arg=None):
+    """Look up a patch entry by index (preferred) or by path (fallback)."""
+    if index_arg is not None:
+        try:
+            idx = int(index_arg)
+            if 0 <= idx < len(entries):
+                return entries[idx]
+        except ValueError:
+            pass
+    return find_patch_for_path(entries, target_path)
+
 if command == "list-files":
     for e in entries:
         print(f"{e.status}|{e.old_path}|{e.new_path}")
 
 elif command == "analyze":
     target_path = sys.argv[3]
-    # Find the entry and analyze
-    entry = find_patch_for_path(entries, target_path)
+    local_path = sys.argv[4] if len(sys.argv) > 4 else target_path
+    entry_index = sys.argv[5] if len(sys.argv) > 5 else None
+    entry = resolve_entry(entries, target_path, entry_index)
     if entry is None:
         print("NOTE|File not found in patch")
         sys.exit(0)
-    # Resolve local file path for reading source
-    local_path = sys.argv[4] if len(sys.argv) > 4 else target_path
     analyze_file_with_patch_text(local_path, entry.raw_text)
 
 elif command == "raw-diff":
     target_path = sys.argv[3]
-    entry = find_patch_for_path(entries, target_path)
+    entry_index = sys.argv[4] if len(sys.argv) > 4 else None
+    entry = resolve_entry(entries, target_path, entry_index)
     if entry:
-        # Print the raw diff section for this file only
         print(entry.raw_text, end="")
 
 else:
@@ -888,7 +900,7 @@ EOF
         echo
         echo "  (file not in working tree — showing patch diff)"
         echo
-        __gitdiffshow_patch_helper raw-diff "$patch_file" "$pp" || true
+        __gitdiffshow_patch_helper raw-diff "$patch_file" "$pp" "$idx" || true
         echo
         continue
       fi
@@ -899,7 +911,7 @@ EOF
 
       if [[ "$show_diff" -eq 1 ]]; then
         echo "--- Patch Diff ---"
-        __gitdiffshow_patch_helper raw-diff "$patch_file" "$pp" || true
+        __gitdiffshow_patch_helper raw-diff "$patch_file" "$pp" "$idx" || true
         echo
       fi
 
@@ -918,7 +930,7 @@ EOF
       fi
 
       local raw
-      raw="$(__gitdiffshow_patch_helper analyze "$patch_file" "$pp" "$f" || true)"
+      raw="$(__gitdiffshow_patch_helper analyze "$patch_file" "$pp" "$f" "$idx" || true)"
 
       local -a funcs=()
       local -a nonfunc=()

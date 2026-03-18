@@ -310,20 +310,32 @@ with open(patch_file, "r") as f:
     patch_text = f.read()
 entries = parse_patch(patch_text)
 
+def resolve_entry(entries, target_path, index_arg=None):
+    if index_arg is not None:
+        try:
+            idx = int(index_arg)
+            if 0 <= idx < len(entries):
+                return entries[idx]
+        except ValueError:
+            pass
+    return find_patch_for_path(entries, target_path)
+
 if command == "list-files":
     for e in entries:
         print(f"{e.status}|{e.old_path}|{e.new_path}")
 elif command == "analyze":
     target_path = sys.argv[3]
-    entry = find_patch_for_path(entries, target_path)
+    local_path = sys.argv[4] if len(sys.argv) > 4 else target_path
+    entry_index = sys.argv[5] if len(sys.argv) > 5 else None
+    entry = resolve_entry(entries, target_path, entry_index)
     if entry is None:
         print("NOTE|File not found in patch")
         sys.exit(0)
-    local_path = sys.argv[4] if len(sys.argv) > 4 else target_path
     analyze_file_with_patch_text(local_path, entry.raw_text)
 elif command == "raw-diff":
     target_path = sys.argv[3]
-    entry = find_patch_for_path(entries, target_path)
+    entry_index = sys.argv[4] if len(sys.argv) > 4 else None
+    entry = resolve_entry(entries, target_path, entry_index)
     if entry:
         print(entry.raw_text, end="")
 else:
@@ -761,6 +773,7 @@ function gitdiffshow
             set -l f $filenames[$idx]
             set -l pp $patch_paths[$idx]
             set -l dl $display_labels[$idx]
+            set -l entry_idx (math $idx - 1)  # 0-based for Python
 
             if not test -f "$f"
                 echo
@@ -768,7 +781,7 @@ function gitdiffshow
                 echo
                 echo "  (file not in working tree — showing patch diff)"
                 echo
-                __gitdiffshow_patch_helper raw-diff "$patch_file" "$pp"
+                __gitdiffshow_patch_helper raw-diff "$patch_file" "$pp" "$entry_idx"
                 echo
                 continue
             end
@@ -779,7 +792,7 @@ function gitdiffshow
 
             if test $show_diff -eq 1
                 echo "--- Patch Diff ---"
-                __gitdiffshow_patch_helper raw-diff "$patch_file" "$pp"
+                __gitdiffshow_patch_helper raw-diff "$patch_file" "$pp" "$entry_idx"
                 echo
             end
 
@@ -797,7 +810,7 @@ function gitdiffshow
                 continue
             end
 
-            set -l raw (__gitdiffshow_patch_helper analyze "$patch_file" "$pp" "$f" | string collect)
+            set -l raw (__gitdiffshow_patch_helper analyze "$patch_file" "$pp" "$f" "$entry_idx" | string collect)
             set -l lines (string split \n -- $raw)
 
             set -l funcs
