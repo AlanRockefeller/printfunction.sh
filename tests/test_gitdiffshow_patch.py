@@ -25,7 +25,7 @@ def run_gitdiffshow(script_path, args, stdin_data=None, cwd=None, env=None):
         env = os.environ.copy()
     env["NO_COLOR"] = "1"
     env["TERM"] = "dumb"
-    cmd = [script_path] + args
+    cmd = [script_path, *args]
     result = subprocess.run(
         cmd,
         cwd=cwd,
@@ -241,15 +241,14 @@ def test_patch_relative_filters(script_path, repo_root):
 
         # From the repo root with a patch that references tests/fixtures/,
         # running --relative from a dir that doesn't contain the file should filter it out
-        tmpdir = tempfile.mkdtemp()
-        res2 = run_gitdiffshow(
-            script_path,
-            ["--patch", patch_path, "--relative", "--no-color"],
-            cwd=tmpdir,
-        )
-        # Should find no files (the patch paths don't exist under tmpdir)
-        assert "No files found in patch" in res2.stdout
-        os.rmdir(tmpdir)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            res2 = run_gitdiffshow(
+                script_path,
+                ["--patch", patch_path, "--relative", "--no-color"],
+                cwd=tmpdir,
+            )
+            # Should find no files (the patch paths don't exist under tmpdir)
+            assert "No files found in patch" in res2.stdout
     finally:
         os.unlink(patch_path)
 
