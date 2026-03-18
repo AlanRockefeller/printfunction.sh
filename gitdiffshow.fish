@@ -765,7 +765,11 @@ function gitdiffshow
             if not test -f "$f"
                 echo
                 echo "===== $dl ====="
-                echo "SKIPPED: $f (file not found in working tree)"
+                echo
+                echo "  (file not in working tree — showing patch diff)"
+                echo
+                __gitdiffshow_patch_helper raw-diff "$patch_file" "$pp"
+                echo
                 continue
             end
 
