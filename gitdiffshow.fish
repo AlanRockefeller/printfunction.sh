@@ -163,25 +163,11 @@ def changed_lines_from_patch_text(patch_text: str) -> List[int]:
     lines = patch_text.split('\n')
     new_line_num = 0
     in_hunk = False
-    hunk_has_add = False
-    hunk_has_del = False
-    hunk_del_anchor = 0
-
-    def _flush_hunk():
-        """Pure-deletion hunk with context: anchor at the new-side deletion point."""
-        if hunk_has_del:
-            changed.append(hunk_del_anchor)
-
     for line in lines:
         m = hunk_re.match(line)
         if m:
-            if in_hunk:
-                _flush_hunk()
             new_line_num = int(m.group(3))
             new_count = int(m.group(4) or "1")
-            hunk_has_add = False
-            hunk_has_del = False
-            hunk_del_anchor = new_line_num
             if new_count == 0:
                 changed.append(new_line_num)
             in_hunk = True
@@ -191,21 +177,14 @@ def changed_lines_from_patch_text(patch_text: str) -> List[int]:
         if line.startswith('+'):
             changed.append(new_line_num)
             new_line_num += 1
-            hunk_has_add = True
         elif line.startswith('-'):
-            if not hunk_has_del:
-                hunk_del_anchor = new_line_num
-            hunk_has_del = True
+            changed.append(new_line_num)
         elif line.startswith(' '):
             new_line_num += 1  # context line, not changed
         elif line.startswith('\\'):
             pass  # "\ No newline at end of file"
         else:
-            _flush_hunk()
             in_hunk = False
-
-    if in_hunk:
-        _flush_hunk()
 
     return sorted(set(changed))
 
