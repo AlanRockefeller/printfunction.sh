@@ -78,7 +78,7 @@ end
 
 # __gitdiffshow_patch_helper: Unified Python-based patch parser.
 # Usage: __gitdiffshow_patch_helper <command> <patch_file> [args...]
-# Commands: list-files (INDEX|STATUS|OLD_PATH|NEW_PATH),
+# Commands: list-files [base_dir] (INDEX|STATUS|OLD_PATH|NEW_PATH[|ABS_PATH]),
 #           analyze <file_path> [local_path] [entry_index],
 #           raw-diff <file_path> [entry_index]
 function __gitdiffshow_patch_helper
@@ -160,13 +160,53 @@ hunk_re = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", re.M)
 
 def changed_lines_from_patch_text(patch_text: str) -> List[int]:
     changed: List[int] = []
-    for m in hunk_re.finditer(patch_text):
-        new_start = int(m.group(3))
-        new_count = int(m.group(4) or "1")
-        if new_count == 0:
-            changed.append(new_start)
+    lines = patch_text.split('\n')
+    new_line_num = 0
+    in_hunk = False
+    hunk_has_add = False
+    hunk_has_del = False
+    hunk_del_anchor = 0
+
+    def _flush_hunk():
+        """Pure-deletion hunk with context: anchor at the new-side deletion point."""
+        if hunk_has_del and not hunk_has_add:
+            changed.append(hunk_del_anchor)
+
+    for line in lines:
+        m = hunk_re.match(line)
+        if m:
+            if in_hunk:
+                _flush_hunk()
+            new_line_num = int(m.group(3))
+            new_count = int(m.group(4) or "1")
+            hunk_has_add = False
+            hunk_has_del = False
+            hunk_del_anchor = new_line_num
+            if new_count == 0:
+                changed.append(new_line_num)
+            in_hunk = True
+            continue
+        if not in_hunk:
+            continue
+        if line.startswith('+'):
+            changed.append(new_line_num)
+            new_line_num += 1
+            hunk_has_add = True
+        elif line.startswith('-'):
+            if not hunk_has_del:
+                hunk_del_anchor = new_line_num
+            hunk_has_del = True
+        elif line.startswith(' '):
+            new_line_num += 1  # context line, not changed
+        elif line.startswith('\\'):
+            pass  # "\ No newline at end of file"
         else:
-            changed.extend(range(new_start, new_start + new_count))
+            _flush_hunk()
+            in_hunk = False
+
+    if in_hunk:
+        _flush_hunk()
+
     return sorted(set(changed))
 
 def merge_ranges(ranges: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
@@ -323,8 +363,19 @@ def resolve_entry(entries, target_path, index_arg=None):
     return find_patch_for_path(entries, target_path)
 
 if command == "list-files":
+    base_dir = sys.argv[3] if len(sys.argv) > 3 else None
+    real_base = os.path.realpath(base_dir) if base_dir else None
     for i, e in enumerate(entries):
-        print(f"{i}|{e.status}|{e.old_path}|{e.new_path}")
+        line = f"{i}|{e.status}|{e.old_path}|{e.new_path}"
+        if real_base is not None:
+            dp = e.new_path if e.status != "deleted" else e.old_path
+            if not dp:
+                continue
+            abs_p = os.path.realpath(os.path.join(real_base, dp))
+            if abs_p != real_base and not abs_p.startswith(real_base + os.sep):
+                continue
+            line += f"|{abs_p}"
+        print(line)
 elif command == "analyze":
     target_path = sys.argv[3]
     local_path = sys.argv[4] if len(sys.argv) > 4 else target_path
@@ -679,21 +730,26 @@ function gitdiffshow
         # Determine base directory for resolving patch paths
         set -l base_dir (git rev-parse --show-toplevel 2>/dev/null; or echo $PWD)
 
-        # Get file list from patch
-        set -l raw_list (__gitdiffshow_patch_helper list-files "$patch_file" | string collect)
+        # Resolve base to canonical form (collapses symlinks) once
+        set -l real_base (cd $base_dir; and pwd -P)
+        set -l real_cwd ""
+        if test $use_relative -eq 1
+            set real_cwd (cd $PWD; and pwd -P)
+        end
+
+        # Get file list from patch (Python normalizes paths and filters .. escapes)
+        set -l raw_list (__gitdiffshow_patch_helper list-files "$patch_file" "$real_base" | string collect)
+        set -l helper_exit $pipestatus[1]
+        if test $helper_exit -ne 0
+            echo "Error: failed to read patch file: $patch_file" >&2
+            test -n "$tmp_patch"; and rm -f $tmp_patch
+            return 1
+        end
 
         set -l filenames
         set -l patch_paths
         set -l display_labels
         set -l entry_indices  # original patch entry index (for repeated paths)
-
-        # Pre-compute real paths for --relative filtering (done once, not per-file)
-        set -l real_cwd ""
-        set -l real_base ""
-        if test $use_relative -eq 1
-            set real_cwd (cd $PWD; and pwd -P)
-            set real_base (cd $base_dir; and pwd -P)
-        end
 
         for line in (string split \n -- $raw_list)
             if test -z "$line"
@@ -704,6 +760,7 @@ function gitdiffshow
             set -l file_status $parts[2]
             set -l old_path $parts[3]
             set -l new_path $parts[4]
+            set -l abs_path $parts[5]
 
             set -l display_path ""
             set -l patch_path ""
@@ -723,21 +780,20 @@ function gitdiffshow
                 continue
             end
 
-            set -l abs_path "$base_dir/$display_path"
+            # abs_path comes pre-normalized from Python (no .. components);
+            # entries that escape base_dir were already filtered out.
 
-            # --relative: filter to files under CWD (lexical prefix check).
+            # --relative: filter to files under CWD.
             # We check the parent directory exists so deleted files in valid dirs
             # are kept, but paths in completely absent trees are filtered out.
             if test $use_relative -eq 1
-                set -l real_abs "$real_base/$display_path"
-                if not string match -q "$real_cwd/*" -- "$real_abs"
+                if not string match -q "$real_cwd/*" -- "$abs_path"
                     continue
                 end
-                if not test -d (dirname "$real_abs")
+                if not test -d (dirname "$abs_path")
                     continue
                 end
-                set display_path (string replace "$real_cwd/" "" -- $real_abs)
-                set abs_path $real_abs
+                set display_path (string replace "$real_cwd/" "" -- $abs_path)
             end
 
             set filenames $filenames $abs_path
