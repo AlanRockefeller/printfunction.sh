@@ -92,10 +92,12 @@ __gitdiffshow_print_excerpt() {
 #   __gitdiffshow_patch_helper <command> <patch_file> [args...]
 #
 # Commands:
-#   list-files <patch_file>
-#       Output one line per file entry: INDEX|STATUS|OLD_PATH|NEW_PATH
+#   list-files <patch_file> [<base_dir>]
+#       Output one line per file entry: INDEX|STATUS|OLD_PATH|NEW_PATH[|ABS_PATH]
 #       INDEX is the 0-based position in the parsed patch (for repeated paths).
 #       STATUS is one of: modified, added, deleted, renamed, copied
+#       When base_dir is given, a 5th field ABS_PATH is appended (realpath'd),
+#       and entries whose resolved path escapes base_dir are omitted.
 #
 #   analyze <patch_file> <file_path> [local_path] [entry_index]
 #       Output analysis lines (same format as __gitdiffshow_analyze_file):
@@ -225,13 +227,32 @@ hunk_re = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", re.M)
 
 def changed_lines_from_patch_text(patch_text: str) -> List[int]:
     changed: List[int] = []
-    for m in hunk_re.finditer(patch_text):
-        new_start = int(m.group(3))
-        new_count = int(m.group(4) or "1")
-        if new_count == 0:
-            changed.append(new_start)
+    lines = patch_text.split('\n')
+    new_line_num = 0
+    in_hunk = False
+    for line in lines:
+        m = hunk_re.match(line)
+        if m:
+            new_line_num = int(m.group(3))
+            new_count = int(m.group(4) or "1")
+            if new_count == 0:
+                changed.append(new_line_num)
+            in_hunk = True
+            continue
+        if not in_hunk:
+            continue
+        if line.startswith('+'):
+            changed.append(new_line_num)
+            new_line_num += 1
+        elif line.startswith('-'):
+            changed.append(new_line_num)
+        elif line.startswith(' '):
+            new_line_num += 1  # context line, not changed
+        elif line.startswith('\\'):
+            pass  # "\ No newline at end of file"
         else:
-            changed.extend(range(new_start, new_start + new_count))
+            in_hunk = False
+
     return sorted(set(changed))
 
 
@@ -428,8 +449,19 @@ def resolve_entry(entries, target_path, index_arg=None):
     return find_patch_for_path(entries, target_path)
 
 if command == "list-files":
+    base_dir = sys.argv[3] if len(sys.argv) > 3 else None
+    real_base = os.path.realpath(base_dir) if base_dir else None
     for i, e in enumerate(entries):
-        print(f"{i}|{e.status}|{e.old_path}|{e.new_path}")
+        line = f"{i}|{e.status}|{e.old_path}|{e.new_path}"
+        if real_base is not None:
+            dp = e.new_path if e.status != "deleted" else e.old_path
+            if not dp:
+                continue
+            abs_p = os.path.realpath(os.path.join(real_base, dp))
+            if abs_p != real_base and not abs_p.startswith(real_base + os.sep):
+                continue
+            line += f"|{abs_p}"
+        print(line)
 
 elif command == "analyze":
     target_path = sys.argv[3]
@@ -798,27 +830,31 @@ EOF
     local base_dir
     base_dir="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
 
-    # Get file list from patch
+    # Resolve base to canonical form (collapses symlinks) once
+    local real_base real_cwd=""
+    real_base="$(cd "$base_dir" && pwd -P)"
+    if [[ "$use_relative" -eq 1 ]]; then
+      real_cwd="$(cd "$PWD" && pwd -P)"
+    fi
+
+    # Get file list from patch (Python normalizes paths and filters .. escapes)
     local raw_list
-    raw_list="$(__gitdiffshow_patch_helper list-files "$patch_file" || true)"
+    if ! raw_list="$(__gitdiffshow_patch_helper list-files "$patch_file" "$real_base")"; then
+      echo "Error: failed to read patch file: $patch_file" >&2
+      [[ -n "$tmp_patch" ]] && rm -f "$tmp_patch"
+      return 1
+    fi
 
     local -a filenames=()
     local -a patch_paths=()      # paths as they appear in the patch
     local -a display_labels=()   # labels for display (includes status info)
     local -a entry_indices=()    # original patch entry index (for repeated paths)
 
-    # Pre-compute real paths for --relative filtering (done once, not per-file)
-    local real_cwd="" real_base=""
-    if [[ "$use_relative" -eq 1 ]]; then
-      real_cwd="$(cd "$PWD" && pwd -P)"
-      real_base="$(cd "$base_dir" && pwd -P)"
-    fi
-
     local line
     while IFS= read -r line; do
       [[ -z "$line" ]] && continue
-      local entry_idx status old_path new_path
-      IFS='|' read -r entry_idx status old_path new_path <<<"$line"
+      local entry_idx status old_path new_path abs_path
+      IFS='|' read -r entry_idx status old_path new_path abs_path <<<"$line"
 
       # Determine the display path and patch-lookup path
       local display_path="" patch_path=""
@@ -839,21 +875,20 @@ EOF
 
       [[ -z "$display_path" ]] && continue
 
-      local abs_path="$base_dir/$display_path"
+      # abs_path comes pre-normalized from Python (no .. components);
+      # entries that escape base_dir were already filtered out.
 
-      # --relative: filter to files under CWD (lexical prefix check).
+      # --relative: filter to files under CWD.
       # We check the parent directory exists so deleted files in valid dirs
       # are kept, but paths in completely absent trees are filtered out.
       if [[ "$use_relative" -eq 1 ]]; then
-        local real_abs="$real_base/$display_path"
-        if [[ "$real_abs" != "$real_cwd"/* ]]; then
+        if [[ "$abs_path" != "$real_cwd"/* ]]; then
           continue
         fi
-        if [[ ! -d "$(dirname "$real_abs")" ]]; then
+        if [[ ! -d "$(dirname "$abs_path")" ]]; then
           continue
         fi
-        display_path="${real_abs#"$real_cwd"/}"
-        abs_path="$real_abs"
+        display_path="${abs_path#"$real_cwd"/}"
       fi
 
       filenames+=("$abs_path")

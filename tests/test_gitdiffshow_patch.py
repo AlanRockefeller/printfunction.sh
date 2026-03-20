@@ -337,6 +337,73 @@ MULTI_COMMIT_PATCH = textwrap.dedent("""\
 """)
 
 
+# ---------------------------------------------------------------------------
+# Pure-deletion hunk with context (regression test)
+# ---------------------------------------------------------------------------
+
+# Patch that removes a line from a Python function, leaving context around it.
+# The hunk has new_count > 0 but NO '+' lines — only context and one '-'.
+PURE_DELETION_PATCH = textwrap.dedent("""\
+    diff --git a/tests/fixtures/simple.py b/tests/fixtures/simple.py
+    index abc1234..def5678 100644
+    --- a/tests/fixtures/simple.py
+    +++ b/tests/fixtures/simple.py
+    @@ -1,4 +1,3 @@
+     def hello():
+    -    print("hello")
+         return True
+""")
+
+
+def test_patch_pure_deletion_with_context(script_path, repo_root):
+    """A hunk that only deletes lines (with surrounding context) must still be shown."""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".patch", delete=False) as f:
+        f.write(PURE_DELETION_PATCH)
+        patch_path = f.name
+    try:
+        res = run_gitdiffshow(script_path, ["--patch", patch_path, "--no-color"])
+        assert res.returncode == 0
+        assert "simple.py" in res.stdout
+        # The file should NOT be skipped — the hunk must produce a changed-line anchor
+        assert "changed file(s) from patch" in res.stdout
+        # There must be some analysis output (FUNC or NONFUNC or excerpt)
+        # for the file, proving the deletion was detected
+        assert "hello" in res.stdout
+    finally:
+        os.unlink(patch_path)
+
+
+# ---------------------------------------------------------------------------
+# Path traversal with .. is blocked
+# ---------------------------------------------------------------------------
+
+DOTDOT_PATCH = textwrap.dedent("""\
+    diff --git a/../../etc/passwd b/../../etc/passwd
+    index abc1234..def5678 100644
+    --- a/../../etc/passwd
+    +++ b/../../etc/passwd
+    @@ -1,2 +1,3 @@
+     root:x:0:0
+    +injected
+     daemon:x:1:1
+""")
+
+
+def test_patch_dotdot_traversal_blocked(script_path, repo_root):
+    """Patch paths containing .. that escape the base dir must be filtered out."""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".patch", delete=False) as f:
+        f.write(DOTDOT_PATCH)
+        patch_path = f.name
+    try:
+        res = run_gitdiffshow(script_path, ["--patch", patch_path, "--no-color"])
+        # The traversal path should be silently filtered; no crash, no output for it
+        assert res.returncode == 0
+        assert "etc/passwd" not in res.stdout
+        assert "No files found in patch" in res.stdout
+    finally:
+        os.unlink(patch_path)
+
+
 def test_patch_repeated_path_with_filtering(script_path, repo_root):
     """Multi-commit patch: both entries for a repeated path should use the correct diff section."""
     with tempfile.NamedTemporaryFile(mode="w", suffix=".patch", delete=False) as f:
