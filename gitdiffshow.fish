@@ -169,7 +169,7 @@ def changed_lines_from_patch_text(patch_text: str) -> List[int]:
 
     def _flush_hunk():
         """Pure-deletion hunk with context: anchor at the new-side deletion point."""
-        if hunk_has_del and not hunk_has_add:
+        if hunk_has_del:
             changed.append(hunk_del_anchor)
 
     for line in lines:
