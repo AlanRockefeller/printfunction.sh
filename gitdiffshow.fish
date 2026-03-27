@@ -26,13 +26,14 @@ set -l __GITDIFFSHOW_NO_PAGER_ENV \
 #   --all              Alias for --printwholefile  (requested)
 #   --diff             Print git diff output in addition to the function context
 #   --patch FILE       Read diff from a patch file (or - for stdin) instead of git diff
+#   --binarydiff       Show diff for binary files (default: skip binary files)
 #   --relative         Only show files relative to the current directory
 #
 # TIP:
 #   Tune excerpt size with:
 #     set -x GITDIFFSHOW_CONTEXT 30
 #
-# Version 1.1.0 by Alan Rockefeller - March 17, 2026
+# Version 1.1.1 by Alan Rockefeller - March 26, 2026
 #
 # ======================================================================
 
@@ -98,6 +99,7 @@ class PatchFile:
     new_path: str
     header: str
     raw_text: str
+    is_binary: bool = False
 
 def parse_patch(patch_text: str) -> List[PatchFile]:
     file_re = re.compile(r"^diff --git ", re.M)
@@ -142,9 +144,14 @@ def parse_patch(patch_text: str) -> List[PatchFile]:
         if plus_match and plus_match.group(1) is None and status != "deleted":
             status = "deleted"
             new_path = ""
+
+        is_binary = re.search(r"^Binary files ", full_section, re.M) is not None or \
+                    re.search(r"^GIT binary patch", full_section, re.M) is not None
+
         results.append(PatchFile(
             status=status, old_path=old_path, new_path=new_path,
             header=header_line, raw_text=full_section,
+            is_binary=is_binary,
         ))
     return results
 
@@ -343,8 +350,11 @@ def resolve_entry(entries, target_path, index_arg=None):
 
 if command == "list-files":
     base_dir = sys.argv[3] if len(sys.argv) > 3 else None
+    include_binary = sys.argv[4] == "1" if len(sys.argv) > 4 else False
     real_base = os.path.realpath(base_dir) if base_dir else None
     for i, e in enumerate(entries):
+        if e.is_binary and not include_binary:
+            continue
         line = f"{i}|{e.status}|{e.old_path}|{e.new_path}"
         if real_base is not None:
             dp = e.new_path if e.status != "deleted" else e.old_path
@@ -597,6 +607,7 @@ function gitdiffshow
     set -l print_wholefile 0
     set -l show_diff 0
     set -l use_relative 0
+    set -l include_binary 0
     set -l color_mode auto
     set -l patch_file ""
     set -l revspec
@@ -622,6 +633,9 @@ function gitdiffshow
                 set i (math $i + 1)
             case --diff
                 set show_diff 1
+                set i (math $i + 1)
+            case --binarydiff
+                set include_binary 1
                 set i (math $i + 1)
             case --relative
                 set use_relative 1
@@ -660,6 +674,7 @@ function gitdiffshow
                 echo "                     Use - for stdin. Patch paths are resolved against the git"
                 echo "                     repo root (if in a repo) or the current directory."
                 echo "                     Cannot be combined with git diff revision arguments."
+                echo "  --binarydiff       Show diff for binary files (default: skip binary files)"
                 echo "  --relative         Only show files relative to the current directory"
                 echo "  --color[=MODE]     Color mode: always, auto, never (default: auto). Bare --color implies always."
                 echo "  --no-color, -n     Disable ANSI color (best for pasting into AI)"
@@ -672,6 +687,7 @@ function gitdiffshow
                 echo "  gitdiffshow --all"
                 echo "  gitdiffshow --relative"
                 echo "  gitdiffshow --diff --no-color"
+                echo "  gitdiffshow --binarydiff"
                 echo ""
                 echo "  # Review a GitHub PR patch file:"
                 echo "  gitdiffshow --patch pr-123.patch"
@@ -717,7 +733,7 @@ function gitdiffshow
         end
 
         # Get file list from patch (Python normalizes paths and filters .. escapes)
-        set -l raw_list (__gitdiffshow_patch_helper list-files "$patch_file" "$real_base" | string collect)
+        set -l raw_list (__gitdiffshow_patch_helper list-files "$patch_file" "$real_base" "$include_binary" | string collect)
         set -l helper_exit $pipestatus[1]
         if test $helper_exit -ne 0
             echo "Error: failed to read patch file: $patch_file" >&2
@@ -926,11 +942,44 @@ function gitdiffshow
     # ----- Normal git diff mode -----
 
     # Get changed files (NUL-delimited for safety)
-    set -l diff_flags --name-only -z
+    set -l diff_flags --numstat -z
     if test $use_relative -eq 1
         set diff_flags $diff_flags --relative
     end
-    set -l filenames (git diff $diff_flags $revspec 2>/dev/null | string split0)
+
+    set -l filenames
+    set -l raw_tokens (git diff $diff_flags $revspec 2>/dev/null | string split0)
+    set -l i 1
+    while test $i -le (count $raw_tokens)
+        set -l item $raw_tokens[$i]
+        # item is "added\tdeleted\tpath"
+        set -l parts (string split \t -- $item)
+        set -l added $parts[1]
+        set -l deleted $parts[2]
+        set -l f $parts[3]
+
+        # If f is empty after NUL-split on numstat, git has emitted a rename/copy record:
+        # "added\tdeleted\t\0oldpath\0newpath\0"
+        if test -n "$added"; and test -z "$f"
+            # next token is oldpath, then newpath
+            set i (math $i + 2)
+            if test $i -le (count $raw_tokens)
+                set f $raw_tokens[$i]
+            end
+        end
+
+        if test -z "$f"
+            set i (math $i + 1)
+            continue
+        end
+
+        if test $include_binary -eq 0; and test "$added" = "-"
+            set i (math $i + 1)
+            continue
+        end
+        set filenames $filenames $f
+        set i (math $i + 1)
+    end
 
     # When not using --relative, paths are repo-root-relative.
     # Resolve them to absolute paths so file-existence checks work from any cwd.

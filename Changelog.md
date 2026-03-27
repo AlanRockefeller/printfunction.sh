@@ -1,5 +1,17 @@
 # Changelog
 
+## gitdiffshow [1.1.1] - 2026-03-26
+
+### Added
+- **`--binarydiff` flag:** Show diff for binary files.
+
+### Changed
+- **Binary file skipping:** Changed default behavior to skip binary files in both `git diff` and `--patch` modes.
+
+### Fixed
+- **Rename parsing:** Fixed a bug where staged renames were misparsed and skipped in `git diff` mode.
+
+
 ## gitdiffshow [1.1.0] - 2026-03-17
 
 ### Added
